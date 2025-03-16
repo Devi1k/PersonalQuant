@@ -1,0 +1,56 @@
+# 量化交易系统配置文件
+
+# 数据源配置
+data_source:
+  provider: "tushare"  # 可选: tushare, joinquant
+  api_key: ""  # 在此填入您的API密钥
+  etf_list_file: "data/raw/etf_list.csv"
+  
+# 回测配置
+backtest:
+  start_date: "2018-01-01"
+  end_date: "2024-03-01"
+  initial_capital: 1000000
+  commission: 0.0003  # 手续费率
+  slippage: 0.001     # 滑点
+  benchmark: "000300"  # 沪深300作为基准
+
+# 策略参数
+strategy:
+  trend:
+    fast_ma: 20
+    slow_ma: 60
+    volume_threshold: 1.2  # 成交量大于5日均量的倍数
+  
+  rotation:
+    lookback_period: 5  # 行业强度排名的回看天数
+    top_n_industries: 3  # 选择前几名行业
+  
+  risk_control:
+    initial_stop_loss_atr_multiple: 2.0  # 初始止损为入场价 - 2*ATR
+    trailing_stop_percentage: 0.03      # 3%回撤止损
+    max_daily_loss_percentage: 0.02     # 单日最大亏损2%
+    max_industry_exposure: 3           # 最多持有3个行业
+    position_sizing_method: "kelly"    # 仓位控制方法: kelly, equal, fixed
+
+# 交易执行
+trading:
+  schedule_time: "14:30"  # 每日运行策略的时间
+  final_check_time: "14:50" # 最后信号确认时间
+  notification:
+    enable: true
+    methods: ["csv", "wechat"]
+    wechat_token: ""      # 微信通知token
+  
+# 日志设置
+logging:
+  level: "INFO"  # DEBUG, INFO, WARNING, ERROR, CRITICAL
+  log_to_file: true
+  log_file: "logs/quant_{date}.log"
+
+# 可视化设置
+visualization:
+  plot_equity_curve: true
+  plot_drawdown: true
+  plot_trade_signals: true
+  output_format: "html"  # html, png, pdf
