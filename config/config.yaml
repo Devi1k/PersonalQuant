@@ -2,7 +2,7 @@
 
 # 数据源配置
 data_source:
-  provider: "tushare"  # 可选: tushare, joinquant
+  provider: "akshare"  # 可选: tushare, joinquant
   api_key: ""  # 在此填入您的API密钥
   etf_list_file: "data/raw/etf_list.csv"
   

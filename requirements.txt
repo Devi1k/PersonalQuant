@@ -9,6 +9,7 @@ SQLAlchemy>=1.4.0
 requests>=2.25.0
 jupyter>=1.0.0
 scikit-learn>=1.0.0
+akshare>=1.16.61  # 添加AKShare作为数据源
 
 # 数据处理
 statsmodels>=0.13.0
