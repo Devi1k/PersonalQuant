@@ -111,7 +111,7 @@ class DataInterface:
         return industry_etfs
     
     def get_etf_history(self, code, start_date=None, end_date=None, 
-                       fields=None, adjust="qfq", use_cache=True, 
+                       fields=None, adjust="", use_cache=True, 
                        force_update=False, with_indicators=True):
         """
         获取ETF历史行情数据
@@ -425,7 +425,7 @@ class DataInterface:
         
         # 如果未指定ETF代码，则使用获取的行业ETF
         if etf_codes is None and not industry_etfs.empty:
-            etf_codes = industry_etfs["code"].tolist()
+            etf_codes = industry_etfs["代码"].tolist()
         
         # 2. 更新ETF历史数据
         etf_count = 0
@@ -438,7 +438,7 @@ class DataInterface:
         result["etf_history"] = etf_count
         
         # 3. 更新指数历史数据
-        index_codes = ["000001", "000300", "000905", "399001", "399006"]  # 上证、沪深300、中证500、深证成指、创业板指
+        index_codes = ["sh000001", "sh000300", "sh000905", "sz399001", "sz399006"]  # 上证、沪深300、中证500、深证成指、创业板指
         index_count = 0
         for code in index_codes:
             df = self.get_index_history(code, start_date, end_date, 
@@ -480,7 +480,7 @@ if __name__ == "__main__":
     print(f"获取到 {len(industry_etfs)} 个行业ETF")
     
     # 测试获取ETF历史数据 (以创业板ETF为例)
-    etf_history = data_interface.get_etf_history("159915", start_date="2023-01-01", end_date="2023-12-31")
+    etf_history = data_interface.get_etf_history("sz159915", start_date="2023-01-01", end_date="2023-12-31")
     print(f"获取到创业板ETF历史数据 {len(etf_history)} 条记录")
     
     # 测试获取技术指标

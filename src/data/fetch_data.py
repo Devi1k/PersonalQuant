@@ -27,11 +27,17 @@ from src.data import (
 )
 
 # 设置日志
+# 确保使用绝对路径
+script_dir = os.path.dirname(os.path.abspath(__file__))
+project_root = os.path.abspath(os.path.join(script_dir, "../.."))
+log_dir = os.path.join(project_root, "logs")
+os.makedirs(log_dir, exist_ok=True)
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler(f"logs/data_fetch_{datetime.now().strftime('%Y%m%d')}.log"),
+        logging.FileHandler(os.path.join(log_dir, f"data_fetch_{datetime.now().strftime('%Y%m%d')}.log")),
         logging.StreamHandler()
     ]
 )
@@ -56,10 +62,13 @@ def parse_args():
 
 def create_directories():
     """创建必要的目录结构"""
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    project_root = os.path.abspath(os.path.join(script_dir, "../.."))
+    
     dirs = [
-        'data/raw',
-        'data/processed',
-        'logs'
+        os.path.join(project_root, 'data/raw'),
+        os.path.join(project_root, 'data/processed'),
+        os.path.join(project_root, 'logs')
     ]
     
     for d in dirs:
@@ -185,9 +194,9 @@ def main():
     
     # 创建目录结构
     create_directories()
+    args.mode = "sentiment"
     
     logger.info(f"启动数据获取脚本，获取模式: {args.mode}")
-    
     try:
         if args.mode == 'all':
             # 更新所有数据

@@ -95,8 +95,8 @@ class AKShareData:
     
     def get_industry_etfs(self, save=True):
         """
-        获取行业ETF列表
-        通过关键词筛选出行业相关ETF
+        获取所有ETF列表
+        不再通过关键词筛选，直接返回所有ETF
         
         Parameters
         ----------
@@ -106,39 +106,28 @@ class AKShareData:
         Returns
         -------
         pandas.DataFrame
-            行业ETF列表
+            所有ETF列表
         """
-        logger.info("开始获取行业ETF列表...")
+        logger.info("开始获取所有ETF列表...")
         
         try:
             # 获取所有ETF
             all_etfs = self.get_etf_list(save=False)
             
-            # 行业ETF关键词
-            industry_keywords = [
-                "行业", "消费", "医药", "金融", "地产", "科技", "材料", 
-                "能源", "通信", "公用", "汽车", "家电", "军工", "传媒",
-                "银行", "保险", "证券", "计算机", "半导体", "有色", "煤炭",
-                "石油", "钢铁", "化工", "基建", "环保", "农业", "酒"
-            ]
-            
-            # 筛选行业ETF
-            industry_etfs = all_etfs[all_etfs["name"].str.contains("|".join(industry_keywords))]
-            
             if save:
                 # 保存到CSV文件
                 file_path = self.raw_data_dir / f"industry_etfs_{datetime.now().strftime('%Y%m%d')}.csv"
-                industry_etfs.to_csv(file_path, index=False, encoding="utf-8-sig")
-                logger.info(f"行业ETF列表已保存至 {file_path}，共 {len(industry_etfs)} 条记录")
+                all_etfs.to_csv(file_path, index=False, encoding="utf-8-sig")
+                logger.info(f"ETF列表已保存至 {file_path}，共 {len(all_etfs)} 条记录")
             
-            return industry_etfs
+            return all_etfs
             
         except Exception as e:
-            logger.error(f"获取行业ETF列表失败: {e}")
+            logger.error(f"获取ETF列表失败: {e}")
             return pd.DataFrame()
     
     def get_etf_history(self, code, start_date=None, end_date=None, 
-                       fields=None, adjust="qfq", save=True):
+                       fields=None, adjust="", save=True):
         """
         获取ETF历史行情数据
         
@@ -340,31 +329,40 @@ class AKShareData:
         sentiment_data = {}
         
         try:
-            # 1. 获取北向资金数据
-            try:
-                north_df = ak.stock_em_hsgt_north_net_flow_in(indicator="沪股通")
-                north_df["date"] = pd.to_datetime(north_df["date"])
-                north_df = north_df[north_df["date"] == date]
-                if not north_df.empty:
-                    sentiment_data["north_fund"] = north_df.iloc[0]["value"]
-            except Exception as e:
-                logger.error(f"获取北向资金数据失败: {e}")
+            # # 1. 获取北向资金数据
+            # try:
+            #     # 使用stock_hsgt_hist_em接口获取北向资金历史数据
+            #     north_df = ak.stock_hsgt_hist_em(symbol="北向资金")
+            #     # 转换日期格式
+            #     north_df["日期"] = pd.to_datetime(north_df["日期"])
+            #     # 筛选特定日期的数据
+            #     date_obj = pd.to_datetime(date)
+            #     north_df = north_df[north_df["日期"] == date_obj]
+                
+            #     if not north_df.empty:
+            #         # 获取当日成交净买额（单位：亿元）
+            #         sentiment_data["north_fund"] = north_df.iloc[0]["当日成交净买额"]
+            #         logger.info(f"获取到北向资金净流入: {sentiment_data['north_fund']}亿元")
+            #     else:
+            #         logger.warning(f"未找到{date}的北向资金数据")
+            # except Exception as e:
+            #     logger.error(f"获取北向资金数据失败: {e}")
             
             # 2. 获取融资融券数据
             try:
-                margin_df = ak.stock_margin_underlying_info_szse(date=date.replace("-", ""))
-                if not margin_df.empty:
-                    sentiment_data["margin_balance"] = margin_df["融资余额"].sum()
-                    sentiment_data["margin_buy"] = margin_df["融资买入额"].sum()
+                margin_sz_df = ak.stock_margin_detail_szse(date=date.replace("-", ""))
+                if not margin_sz_df.empty:
+                    sentiment_data["margin_balance"] = margin_sz_df["融资余额"].sum()
+                    sentiment_data["margin_buy"] = margin_sz_df["融资买入额"].sum()
             except Exception as e:
                 logger.error(f"获取融资融券数据失败: {e}")
             
             # 3. 获取涨跌停数据
             try:
-                limit_df = ak.stock_em_zt_pool(date=date)
+                limit_df = ak.stock_zt_pool_em(date=date.replace("-", ""))
                 sentiment_data["up_limit_count"] = len(limit_df)
                 
-                limit_down_df = ak.stock_em_dt_pool(date=date)
+                limit_down_df = ak.stock_zt_pool_dtgc_em(date=date.replace("-", ""))
                 sentiment_data["down_limit_count"] = len(limit_down_df)
             except Exception as e:
                 logger.error(f"获取涨跌停数据失败: {e}")
@@ -462,14 +460,14 @@ if __name__ == "__main__":
     etf_list = data.get_etf_list()
     print(f"获取到 {len(etf_list)} 个ETF")
     
-    # 测试获取行业ETF列表
-    industry_etfs = data.get_industry_etfs()
-    print(f"获取到 {len(industry_etfs)} 个行业ETF")
+    # # 测试获取行业ETF列表
+    # industry_etfs = data.get_industry_etfs()
+    # print(f"获取到 {len(industry_etfs)} 个行业ETF")
     
     # 测试获取ETF历史数据 (以创业板ETF为例)
-    etf_history = data.get_etf_history("159915", start_date="2023-01-01", end_date="2023-12-31")
+    etf_history = data.get_etf_history("sz159915", start_date="2023-01-01", end_date="2023-12-31")
     print(f"获取到创业板ETF历史数据 {len(etf_history)} 条记录")
     
     # 测试获取指数历史数据 (以沪深300为例)
-    index_history = data.get_index_history("000300", start_date="2023-01-01", end_date="2023-12-31")
+    index_history = data.get_index_history("sh000001", start_date="2023-01-01", end_date="2023-12-31")
     print(f"获取到沪深300指数历史数据 {len(index_history)} 条记录")

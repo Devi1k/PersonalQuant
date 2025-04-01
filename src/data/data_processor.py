@@ -163,18 +163,25 @@ class DataProcessor:
         # 1. 计算移动平均线
         ma_periods = [5, 10, 20, 60]
         for period in ma_periods:
-            result_df[f"ma_{period}"] = result_df["close"].rolling(window=period).mean()
+            result_df[f"ma_{period}"] = result_df["close"].rolling(window=period).mean().fillna(method="bfill")
             logger.info(f"计算 {period} 日移动平均线")
         
         # 2. 计算MACD
         # MACD = 12日EMA - 26日EMA
         # 信号线 = MACD的9日EMA
         # MACD柱 = MACD - 信号线
+        # 计算MACD
+        # MACD参数: 快线EMA=12, 慢线EMA=26, 信号线EMA=9
+        # adjust=False确保与TA-Lib等标准库计算结果一致
         ema12 = result_df["close"].ewm(span=12, adjust=False).mean()
         ema26 = result_df["close"].ewm(span=26, adjust=False).mean()
         result_df["macd"] = ema12 - ema26
         result_df["macd_signal"] = result_df["macd"].ewm(span=9, adjust=False).mean()
         result_df["macd_hist"] = result_df["macd"] - result_df["macd_signal"]
+        
+        # 填充NaN值
+        macd_cols = ["macd", "macd_signal", "macd_hist"]
+        result_df[macd_cols] = result_df[macd_cols].fillna(0)
         logger.info("计算MACD指标")
         
         # 3. 计算RSI (相对强弱指数)
@@ -183,22 +190,31 @@ class DataProcessor:
         delta = result_df["close"].diff()
         gain = delta.where(delta > 0, 0)
         loss = -delta.where(delta < 0, 0)
+        # 使用指数移动平均(EMA)计算RSI，符合标准RSI计算方法
+        avg_gain_14 = gain.ewm(alpha=1/14, adjust=False).mean()
+        avg_loss_14 = loss.ewm(alpha=1/14, adjust=False).mean()
         
-        avg_gain_14 = gain.rolling(window=14).mean()
-        avg_loss_14 = loss.rolling(window=14).mean()
-        
-        rs_14 = avg_gain_14 / avg_loss_14
+        # 处理除零情况
+        rs_14 = avg_gain_14 / avg_loss_14.replace(0, np.finfo(float).eps)
         result_df["rsi_14"] = 100 - (100 / (1 + rs_14))
+        # 处理极值情况
+        result_df["rsi_14"] = result_df["rsi_14"].clip(0, 100).fillna(50)
+        logger.info("计算RSI指标")
         logger.info("计算RSI指标")
         
         # 4. 计算布林带
         # 中轨 = 20日移动平均线
         # 上轨 = 中轨 + 2倍标准差
         # 下轨 = 中轨 - 2倍标准差
+        # 计算布林带中轨(20日移动平均线)
         result_df["bb_middle"] = result_df["close"].rolling(window=20).mean()
-        result_df["bb_std"] = result_df["close"].rolling(window=20).std()
+        # 使用样本标准差(ddof=1)而非总体标准差(ddof=0)
+        result_df["bb_std"] = result_df["close"].rolling(window=20).std(ddof=1)
         result_df["bb_upper"] = result_df["bb_middle"] + 2 * result_df["bb_std"]
         result_df["bb_lower"] = result_df["bb_middle"] - 2 * result_df["bb_std"]
+        # 填充NaN值
+        bb_cols = ["bb_middle", "bb_std", "bb_upper", "bb_lower"]
+        result_df[bb_cols] = result_df[bb_cols].fillna(method="bfill")
         logger.info("计算布林带指标")
         
         # 5. 计算KDJ
@@ -206,22 +222,28 @@ class DataProcessor:
         # K = 2/3 * 前一日K值 + 1/3 * 当日RSV
         # D = 2/3 * 前一日D值 + 1/3 * 当日K值
         # J = 3 * K - 2 * D
+        # 计算KDJ指标
         low_9 = result_df["low"].rolling(window=9).min()
         high_9 = result_df["high"].rolling(window=9).max()
-        rsv = (result_df["close"] - low_9) / (high_9 - low_9) * 100
         
-        # 初始化K、D值
-        k = pd.Series([50] * len(result_df))
-        d = pd.Series([50] * len(result_df))
+        # 处理除零问题
+        high_low_range = high_9 - low_9
+        rsv = np.where(high_low_range != 0,
+                      (result_df["close"] - low_9) / high_low_range * 100,
+                      50)  # 当最高价=最低价时，使用中性值50
         
-        # 计算K、D值
-        for i in range(1, len(result_df)):
-            k[i] = 2/3 * k[i-1] + 1/3 * rsv[i]
-            d[i] = 2/3 * d[i-1] + 1/3 * k[i]
+        # 使用向量化计算K/D值，使用EMA实现平滑
+        k = pd.Series(rsv).ewm(alpha=1/3, adjust=False).mean().fillna(50)
+        d = k.ewm(alpha=1/3, adjust=False).mean().fillna(50)
+        j = 3 * k - 2 * d
         
         result_df["kdj_k"] = k
         result_df["kdj_d"] = d
-        result_df["kdj_j"] = 3 * k - 2 * d
+        result_df["kdj_j"] = j
+        
+        # 处理极值
+        kdj_cols = ["kdj_k", "kdj_d", "kdj_j"]
+        result_df[kdj_cols] = result_df[kdj_cols].clip(0, 100)
         logger.info("计算KDJ指标")
         
         # 6. 计算CCI (顺势指标)
@@ -232,7 +254,11 @@ class DataProcessor:
         tp = (result_df["high"] + result_df["low"] + result_df["close"]) / 3
         tp_sma_20 = tp.rolling(window=20).mean()
         md_20 = tp.rolling(window=20).apply(lambda x: np.abs(x - x.mean()).mean())
-        result_df["cci_20"] = (tp - tp_sma_20) / (0.015 * md_20)
+        # 处理除零情况
+        md_20_safe = md_20.replace(0, np.finfo(float).eps)
+        result_df["cci_20"] = (tp - tp_sma_20) / (0.015 * md_20_safe)
+        # 填充NaN值并处理极值
+        result_df["cci_20"] = result_df["cci_20"].fillna(0).clip(-100, 100)
         logger.info("计算CCI指标")
         
         # 7. 计算ATR (平均真实波幅)
@@ -242,23 +268,19 @@ class DataProcessor:
         tr2 = (result_df["high"] - result_df["close"].shift(1)).abs()
         tr3 = (result_df["low"] - result_df["close"].shift(1)).abs()
         tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
-        result_df["atr_14"] = tr.rolling(window=14).mean()
+        # 使用指数移动平均(EMA)计算ATR，符合Wilder平滑方法
+        result_df["atr_14"] = tr.ewm(alpha=1/14, adjust=False).mean().fillna(method="bfill")
         logger.info("计算ATR指标")
         
         # 8. 计算OBV (能量潮)
         # 如果当日收盘价 > 前一日收盘价，OBV = 前一日OBV + 当日成交量
         # 如果当日收盘价 < 前一日收盘价，OBV = 前一日OBV - 当日成交量
         # 如果当日收盘价 = 前一日收盘价，OBV = 前一日OBV
-        obv = pd.Series(0, index=result_df.index)
-        for i in range(1, len(result_df)):
-            if result_df["close"].iloc[i] > result_df["close"].iloc[i-1]:
-                obv.iloc[i] = obv.iloc[i-1] + result_df["volume"].iloc[i]
-            elif result_df["close"].iloc[i] < result_df["close"].iloc[i-1]:
-                obv.iloc[i] = obv.iloc[i-1] - result_df["volume"].iloc[i]
-            else:
-                obv.iloc[i] = obv.iloc[i-1]
-        
-        result_df["obv"] = obv
+        # 使用向量化计算OBV，提高效率
+        price_change = result_df["close"].diff()
+        volume_direction = np.sign(price_change)  # 1 for up, -1 for down, 0 for no change
+        obv = (volume_direction * result_df["volume"]).cumsum()
+        result_df["obv"] = obv.fillna(0)
         logger.info("计算OBV指标")
         
         logger.info(f"技术指标计算完成，共添加 {len(result_df.columns) - len(df.columns)} 个技术指标")
@@ -417,7 +439,7 @@ if __name__ == "__main__":
     
     # 测试处理ETF历史数据
     # 假设我们有一个ETF历史数据文件
-    test_file = Path("data/raw/etf_159915_20230101_20231231.csv")
+    test_file = Path("C:\\Zepu\\Code\\PersonalQuant\\data\\raw\\etf_sz159998_20240401_20250401.csv")
     if test_file.exists():
         df = pd.read_csv(test_file)
         processed_df = processor.process_etf_history(df)
