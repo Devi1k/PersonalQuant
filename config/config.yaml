@@ -3,7 +3,6 @@
 # 数据源配置
 data_source:
   provider: "akshare"  # 可选: tushare, joinquant
-  api_key: ""  # 在此填入您的API密钥
   etf_list_file: "data/raw/etf_list.csv"
   
 # 回测配置
@@ -56,17 +55,14 @@ strategy:
     initial_stop_loss_atr_multiple: 2.0  # 初始止损为入场价 - 2*ATR
     trailing_stop_percentage: 0.03      # 3%回撤止损
     max_daily_loss_percentage: 0.02     # 单日最大亏损2%
-    max_industry_exposure: 3           # 最多持有3个行业
+    max_industry_exposure: 5           # 最多持有3个行业
     position_sizing_method: "kelly"    # 仓位控制方法: kelly, equal, fixed
 
 # 交易执行
 trading:
-  schedule_time: "14:30"  # 每日运行策略的时间
+  schedule_time: "14:00"  # 每日运行策略的时间
   final_check_time: "14:50" # 最后信号确认时间
-  notification:
-    enable: true
-    methods: ["csv", "wechat"]
-    wechat_token: ""      # 微信通知token
+
   
 # 日志设置
 logging:
@@ -79,4 +75,4 @@ visualization:
   plot_equity_curve: true
   plot_drawdown: true
   plot_trade_signals: true
-  output_format: "html"  # html, png, pdf
+  output_format: "png"  # html, png, pdf

@@ -54,13 +54,18 @@ class TrendStrategy:
         # 成交量阈值
         self.volume_threshold = trend_config.get('volume_threshold', 1.2)
         
+        # 策略类型仓位权重
+        self.trend_weight = trend_config.get('trend_weight', 0.7)  # 趋势跟踪 (60-80%)
+        self.multi_tf_weight = trend_config.get('multi_tf_weight', 0.25)  # 多周期策略 (20-30%)
+        self.reversal_weight = trend_config.get('reversal_weight', 0.05)  # 反转策略 (5-10%)
+        
         # 信号组合权重
         default_weights = {
-            'bb_signal': 1.0,
-            'macd_signal': 1.5,
-            'multi_timeframe_signal': 2.0,
-            'ema_reversal_signal': 1.2,
-            'volume_price_signal': 0.8
+            'bb_signal': 2.0,            # 布林带信号权重提高（趋势跟踪核心指标）
+            'macd_signal': 2.5,          # MACD信号权重提高（趋势跟踪核心指标）
+            'multi_timeframe_signal': 3.0, # 多周期信号权重最高（优化入场点）
+            'ema_reversal_signal': 1.5,   # 反转信号权重适中（风险对冲）
+            'volume_price_signal': 1.0    # 成交量确认信号
         }
         self.signal_weights = trend_config.get('signal_weights', default_weights)
         
@@ -497,6 +502,12 @@ class TrendStrategy:
         """
         K线收盘价交易执行（减少滑点冲击）
         
+        支持小数值信号处理：
+        - 1.0: 完全买入信号（标准仓位）
+        - 0.5: 试探性买入信号（小仓位）
+        - -0.5: 减仓信号（部分卖出）
+        - -1.0: 完全卖出信号（清仓）
+        
         Parameters
         ----------
         df : pandas.DataFrame
@@ -535,16 +546,35 @@ class TrendStrategy:
         execution_col = f"{signal_col}_execution"
         result_df[execution_col] = result_df[signal_col]
         
-        # 统计信号数量
-        buy_signals = (result_df[execution_col] > 0).sum()
-        sell_signals = (result_df[execution_col] < 0).sum()
-        logger.info(f"收盘价交易执行信号计算完成，买入信号: {buy_signals}个, 卖出信号: {sell_signals}个")
+        # 创建仓位大小列（根据信号强度）
+        position_col = f"{signal_col}_position"
+        result_df[position_col] = 0.0
+        
+        # 设置不同信号对应的仓位大小
+        result_df.loc[result_df[signal_col] == 1, position_col] = 1.0      # 完全买入（标准仓位）
+        result_df.loc[result_df[signal_col] == 0.5, position_col] = 0.3    # 试探性买入（小仓位，30%）
+        result_df.loc[result_df[signal_col] == -0.5, position_col] = -0.5  # 减仓（减少50%仓位）
+        result_df.loc[result_df[signal_col] == -1, position_col] = -1.0    # 完全卖出（清仓）
+        
+        # 统计信号数量和类型
+        full_buy = (result_df[execution_col] == 1).sum()
+        small_buy = (result_df[execution_col] == 0.5).sum()
+        reduce = (result_df[execution_col] == -0.5).sum()
+        full_sell = (result_df[execution_col] == -1).sum()
+        
+        logger.info(f"收盘价交易执行信号计算完成，完全买入: {full_buy}个, 试探性买入: {small_buy}个, "
+                   f"减仓: {reduce}个, 完全卖出: {full_sell}个")
         
         return result_df
     
     def combine_signals(self, df):
         """
         组合多个策略信号，生成最终交易信号
+        
+        根据策略类型分配仓位：
+        - 趋势跟踪为主（60-80%仓位）：布林带和MACD信号
+        - 多周期策略优化入场点（20-30%）：多维周期组合策略
+        - 反转策略作为风险对冲（5-10%）：EMA通道反转策略
         
         Parameters
         ----------
@@ -577,33 +607,103 @@ class TrendStrategy:
         # 复制数据，避免修改原始数据
         result_df = df.copy()
         
-        # 计算信号得分（各个信号的加权和）
-        result_df['signal_score'] = 0
+        # 按照策略类型分组
+        trend_signals = ['bb_signal', 'macd_signal']
+        multi_tf_signals = ['multi_timeframe_signal']
+        reversal_signals = ['ema_reversal_signal']
+        confirmation_signals = ['volume_price_signal']
+        
+        # 初始化各类型策略的得分
+        result_df['trend_score'] = 0
+        result_df['multi_tf_score'] = 0
+        result_df['reversal_score'] = 0
+        result_df['confirmation_score'] = 0
         
         # 使用配置文件中的信号权重
         weights = self.signal_weights
         
-        # 计算加权得分
+        # 计算各类型策略的加权得分
         for col in available_signals:
             if col in weights:
-                result_df['signal_score'] += result_df[col] * weights[col]
+                if col in trend_signals:
+                    result_df['trend_score'] += result_df[col] * weights[col]
+                elif col in multi_tf_signals:
+                    result_df['multi_tf_score'] += result_df[col] * weights[col]
+                elif col in reversal_signals:
+                    result_df['reversal_score'] += result_df[col] * weights[col]
+                elif col in confirmation_signals:
+                    result_df['confirmation_score'] += result_df[col] * weights[col]
+        
+        # 使用从配置中读取的策略类型仓位权重
+        trend_weight = self.trend_weight      # 趋势跟踪 (60-80%)
+        multi_tf_weight = self.multi_tf_weight  # 多周期策略 (20-30%)
+        reversal_weight = self.reversal_weight  # 反转策略 (5-10%)
+        
+        # 计算综合信号得分
+        result_df['signal_score'] = (
+            result_df['trend_score'] * trend_weight +
+            result_df['multi_tf_score'] * multi_tf_weight +
+            result_df['reversal_score'] * reversal_weight
+        )
+        
+        # 成交量确认可以作为额外的过滤条件
+        result_df['volume_confirmed'] = result_df['confirmation_score'] > 0
         
         # 生成最终交易信号
-        # 1 = 买入信号（得分 >= 2）
-        # -1 = 卖出信号（得分 <= -2）
+        # 1 = 买入信号（得分 > 0 且至少一个主要策略有信号）
+        # -1 = 卖出信号（得分 < 0 且至少一个主要策略有信号）
         # 0 = 无信号
         
         result_df['final_signal'] = 0
-        result_df.loc[result_df['signal_score'] >= 2, 'final_signal'] = 1
-        result_df.loc[result_df['signal_score'] <= -2, 'final_signal'] = -1
+        
+        # 买入条件：综合得分为正，且至少有一个主要策略（趋势或多周期）发出买入信号
+        buy_condition = (
+            (result_df['signal_score'] > 0) &
+            ((result_df['trend_score'] > 0) | (result_df['multi_tf_score'] > 0))
+        )
+        
+        # 卖出条件：综合得分为负，且至少有一个主要策略（趋势或多周期）发出卖出信号
+        sell_condition = (
+            (result_df['signal_score'] < 0) &
+            ((result_df['trend_score'] < 0) | (result_df['multi_tf_score'] < 0))
+        )
+        
+        # 反转策略的特殊处理：当主要趋势为强烈上升但反转信号出现时，减仓但不完全卖出
+        reversal_hedge_condition = (
+            (result_df['trend_score'] > 1.5) &
+            (result_df['reversal_score'] < -1.0)
+        )
+        
+        # 反转策略的特殊处理：当主要趋势为强烈下跌但反转信号出现时，小仓位试探性买入
+        reversal_buy_condition = (
+            (result_df['trend_score'] < -1.5) &
+            (result_df['reversal_score'] > 1.0)
+        )
+        
+        # 设置最终信号
+        result_df.loc[buy_condition, 'final_signal'] = 1
+        result_df.loc[sell_condition, 'final_signal'] = -1
+        
+        # 反转策略对冲信号（减仓信号，用-0.5表示）
+        result_df.loc[reversal_hedge_condition, 'final_signal'] = -0.5
+        
+        # 反转策略试探性买入信号（小仓位，用0.5表示）
+        result_df.loc[reversal_buy_condition, 'final_signal'] = 0.5
+        
+        # 成交量确认：如果没有成交量确认，可以降低信号强度
+        result_df.loc[(result_df['final_signal'] != 0) & (~result_df['volume_confirmed']), 'final_signal'] *= 0.8
         
         # 应用收盘价交易执行
         result_df = self.close_price_execution(result_df, 'final_signal')
         
         # 统计信号数量
-        buy_signals = (result_df['final_signal'] == 1).sum()
-        sell_signals = (result_df['final_signal'] == -1).sum()
+        buy_signals = (result_df['final_signal'] > 0).sum()
+        sell_signals = (result_df['final_signal'] < 0).sum()
         logger.info(f"组合信号计算完成，买入信号: {buy_signals}个, 卖出信号: {sell_signals}个")
+        logger.info(f"其中完全买入信号: {(result_df['final_signal'] == 1).sum()}个, "
+                   f"试探性买入信号: {(result_df['final_signal'] == 0.5).sum()}个, "
+                   f"完全卖出信号: {(result_df['final_signal'] == -1).sum()}个, "
+                   f"减仓信号: {(result_df['final_signal'] == -0.5).sum()}个")
         
         return result_df
 
