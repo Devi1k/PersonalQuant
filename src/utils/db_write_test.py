@@ -129,7 +129,7 @@ class DBWriteTest:
             logger.info("开始测试市场情绪数据写入...")
             
             # 获取当前日期
-            date = (datetime.now() - timedelta(days=6)).strftime("%Y-%m-%d")
+            date = datetime.now().strftime("%Y-%m-%d")
             
             # 获取市场情绪数据
             market_sentiment = self.akshare_data.get_market_sentiment(date=date, save=True)

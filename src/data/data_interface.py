@@ -481,7 +481,7 @@ class DataInterface:
         
         # 如果未指定ETF代码，则使用获取的行业ETF
         if etf_codes is None and not industry_etfs.empty:
-            etf_codes = industry_etfs["代码"].tolist()
+            etf_codes = industry_etfs["code"].tolist()
         
         # 2. 更新ETF历史数据
         etf_count = 0

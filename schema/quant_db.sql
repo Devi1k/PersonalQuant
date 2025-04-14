@@ -6,7 +6,7 @@ USE quant_db;
 -- 创建ETF基础信息表
 CREATE TABLE IF NOT EXISTS etf_list (
     id INT NOT NULL AUTO_INCREMENT COMMENT '自增主键',
-    code VARCHAR(6) NOT NULL COMMENT 'ETF代码',
+    code VARCHAR(8) NOT NULL COMMENT 'ETF代码',
     name VARCHAR(50) NOT NULL COMMENT 'ETF名称',
     latest_price DECIMAL(10, 2) COMMENT '最新价',
     price_change DECIMAL(10, 2) COMMENT '涨跌额',

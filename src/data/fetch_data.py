@@ -194,8 +194,9 @@ def main():
     
     # 创建目录结构
     create_directories()
-    args.mode = "sentiment"
-    
+    args.start = "2018-01-01"
+    args.end = "2025-04-11"
+    args.mode = "all"
     logger.info(f"启动数据获取脚本，获取模式: {args.mode}")
     try:
         if args.mode == 'all':
