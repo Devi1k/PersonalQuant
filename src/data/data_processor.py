@@ -77,8 +77,8 @@ class DataProcessor:
         processed_df = df.copy()
         
         # 确保日期列为datetime类型
-        if "date" in processed_df.columns:
-            processed_df["date"] = pd.to_datetime(processed_df["date"])
+        if "trade_date" in processed_df.columns:
+            processed_df["trade_date"] = pd.to_datetime(processed_df["trade_date"])
         
         # 填充缺失值
         if fill_missing:
@@ -100,18 +100,25 @@ class DataProcessor:
         
         # 检测异常值
         if detect_outliers:
-            # 对于价格数据，使用3倍标准差检测异常值
+            # 对于价格数据，使用滚动窗口的3倍标准差检测异常值，避免前视偏差
             price_cols = ["open", "high", "low", "close"]
+            window_size = 20  # 使用20日滚动窗口
+            min_obs = 5      # 最少需要5个观测值才能计算
+            
             for col in price_cols:
                 if col in processed_df.columns:
-                    # 计算3倍标准差范围
-                    mean = processed_df[col].mean()
-                    std = processed_df[col].std()
-                    lower_bound = mean - 3 * std
-                    upper_bound = mean + 3 * std
+                    # 计算滚动均值和标准差
+                    rolling_mean = processed_df[col].rolling(window=window_size, min_periods=min_obs).mean()
+                    rolling_std = processed_df[col].rolling(window=window_size, min_periods=min_obs).std()
+                    
+                    # 计算上下边界
+                    lower_bound = rolling_mean - 3 * rolling_std
+                    upper_bound = rolling_mean + 3 * rolling_std
                     
                     # 检测异常值
-                    outliers = processed_df[(processed_df[col] < lower_bound) | (processed_df[col] > upper_bound)]
+                    outliers_mask = (processed_df[col] < lower_bound) | (processed_df[col] > upper_bound)
+                    outliers = processed_df[outliers_mask]
+                    
                     if not outliers.empty:
                         logger.warning(f"检测到 {col} 列中有 {len(outliers)} 个异常值")
                         
@@ -124,14 +131,21 @@ class DataProcessor:
         # 计算日收益率
         if "close" in processed_df.columns:
             processed_df["daily_return"] = processed_df["close"].pct_change()
+            # 将第一个NaN值填充为0
+            processed_df["daily_return"] = processed_df["daily_return"].fillna(0)
             
         # 计算波动率 (20日滚动标准差)
         if "daily_return" in processed_df.columns:
+            # 计算20日滚动标准差
             processed_df["volatility_20d"] = processed_df["daily_return"].rolling(window=20).std()
+            
+            # 避免前视偏差：不填充初始NaN值，让下游策略处理
+            # 如果确实需要填充，可以使用expanding窗口计算
+            logger.info("计算20日波动率，初始NaN值保留不填充，避免前视偏差")
         
         # 确保数据按日期排序
-        if "date" in processed_df.columns:
-            processed_df = processed_df.sort_values("date")
+        if "trade_date" in processed_df.columns:
+            processed_df = processed_df.sort_values("trade_date")
         
         logger.info(f"ETF历史数据处理完成，处理后共 {len(processed_df)} 条记录")
         
@@ -158,7 +172,7 @@ class DataProcessor:
             return df
         
         # 确保必要的列存在
-        required_cols = ["date", "open", "high", "low", "close", "volume"]
+        required_cols = ["trade_date", "open", "high", "low", "close", "volume"]
         missing_cols = [col for col in required_cols if col not in df.columns]
         if missing_cols:
             logger.error(f"计算技术指标所需的列缺失: {missing_cols}")
@@ -170,19 +184,22 @@ class DataProcessor:
         result_df = df.copy()
         
         # 确保数据按日期排序
-        result_df = result_df.sort_values("date")
+        result_df = result_df.sort_values("trade_date")
         
-        # 1. 计算移动平均线
+        # 1. 计算移动平均线 - 改进填充策略
         ma_periods = [5, 10, 20, 60]
         for period in ma_periods:
-            result_df[f"ma_{period}"] = result_df["close"].rolling(window=period).mean().fillna(method="bfill")
+            # 计算移动平均线
+            result_df[f"ma_{period}"] = result_df["close"].rolling(window=period).mean()
+            # 避免前视偏差：只使用前向填充，不使用后向填充
+            result_df[f"ma_{period}"] = result_df[f"ma_{period}"].fillna(method="ffill")
             logger.info(f"计算 {period} 日移动平均线")
             
         # 1.1 计算指数移动平均线(EMA)
         # 从配置中获取EMA通道参数，如果没有则使用默认值
         ema_channel_period = 144
         ema_channel_width = 0.05
-        
+        # TODO: 处理空值
         if config and 'strategy' in config and 'trend' in config['strategy']:
             trend_config = config['strategy']['trend']
             ema_channel_period = trend_config.get('ema_channel_period', 144)
@@ -202,7 +219,10 @@ class DataProcessor:
         ema_periods = list(set(ema_periods))
         
         for period in ema_periods:
-            result_df[f"ema_{period}"] = result_df["close"].ewm(span=period, adjust=False).mean().fillna(method="bfill")
+            # 计算EMA
+            result_df[f"ema_{period}"] = result_df["close"].ewm(span=period, adjust=False).mean()
+            # 避免前视偏差：只使用前向填充，不使用后向填充
+            result_df[f"ema_{period}"] = result_df[f"ema_{period}"].fillna(method="ffill")
             logger.info(f"计算 {period} 日指数移动平均线(EMA)")
             
         # 1.2 计算EMA均线通道
@@ -216,7 +236,7 @@ class DataProcessor:
             result_df[f"{ema_col}_lower"] = result_df[ema_col] * (1 - ema_channel_width)
             # 填充NaN值
             channel_cols = [f"{ema_col}_upper", f"{ema_col}_lower"]
-            result_df[channel_cols] = result_df[channel_cols].fillna(method="bfill")
+            result_df[channel_cols] = result_df[channel_cols].fillna(method="ffill")
             logger.info(f"计算{ema_channel_period}日EMA均线通道，宽度={ema_channel_width}")
         
         # 2. 计算MACD
@@ -263,16 +283,15 @@ class DataProcessor:
         delta = result_df["close"].diff()
         gain = delta.where(delta > 0, 0)
         loss = -delta.where(delta < 0, 0)
-        # 使用指数移动平均(EMA)计算RSI，符合标准RSI计算方法
-        avg_gain_14 = gain.ewm(alpha=1/14, adjust=False).mean()
-        avg_loss_14 = loss.ewm(alpha=1/14, adjust=False).mean()
+        # 使用Wilder's Smoothing计算RSI
+        avg_gain_14 = gain.ewm(com=13, adjust=False).mean()
+        avg_loss_14 = loss.ewm(com=13, adjust=False).mean()
         
         # 处理除零情况
         rs_14 = avg_gain_14 / avg_loss_14.replace(0, np.finfo(float).eps)
         result_df["rsi_14"] = 100 - (100 / (1 + rs_14))
         # 处理极值情况
         result_df["rsi_14"] = result_df["rsi_14"].clip(0, 100).fillna(50)
-        logger.info("计算RSI指标")
         logger.info("计算RSI指标")
         
         # 4. 计算布林带
@@ -285,19 +304,39 @@ class DataProcessor:
             bollinger_period = trend_config.get('bollinger_period', 20)
             bollinger_std_dev = trend_config.get('bollinger_std_dev', 2.0)
         
-        # 中轨 = N日移动平均线
-        # 上轨 = 中轨 + K倍标准差
-        # 下轨 = 中轨 - K倍标准差
-        # 计算布林带中轨
-        result_df["bb_middle"] = result_df["close"].rolling(window=bollinger_period).mean()
-        # 使用样本标准差(ddof=1)而非总体标准差(ddof=0)
-        result_df["bb_std"] = result_df["close"].rolling(window=bollinger_period).std(ddof=1)
-        result_df["bb_upper"] = result_df["bb_middle"] + bollinger_std_dev * result_df["bb_std"]
-        result_df["bb_lower"] = result_df["bb_middle"] - bollinger_std_dev * result_df["bb_std"]
-        # 填充NaN值
-        bb_cols = ["bb_middle", "bb_std", "bb_upper", "bb_lower"]
-        result_df[bb_cols] = result_df[bb_cols].fillna(method="bfill")
-        logger.info(f"计算布林带指标，周期={bollinger_period}，标准差倍数={bollinger_std_dev}")
+        # 检查数据量是否足够计算布林带
+        if len(result_df) >= bollinger_period:
+            # 中轨 = N日移动平均线
+            result_df["bb_middle"] = result_df["close"].rolling(window=bollinger_period).mean()
+            # 使用样本标准差(ddof=1)而非总体标准差(ddof=0)
+            result_df["bb_std"] = result_df["close"].rolling(window=bollinger_period).std(ddof=1)
+            result_df["bb_upper"] = result_df["bb_middle"] + bollinger_std_dev * result_df["bb_std"]
+            result_df["bb_lower"] = result_df["bb_middle"] - bollinger_std_dev * result_df["bb_std"]
+            
+            # 改进填充策略
+            # 对于中轨，使用与移动平均线相同的填充策略
+            result_df["bb_middle"] = result_df["bb_middle"].fillna(method="ffill")
+            
+            # 对于标准差，使用前向填充，避免前视偏差
+            result_df["bb_std"] = result_df["bb_std"].fillna(method="ffill")
+            
+            # 重新计算上下轨，确保它们与中轨和标准差一致
+            result_df["bb_upper"] = result_df["bb_middle"] + bollinger_std_dev * result_df["bb_std"]
+            result_df["bb_lower"] = result_df["bb_middle"] - bollinger_std_dev * result_df["bb_std"]
+            
+            logger.info(f"计算布林带指标，周期={bollinger_period}，标准差倍数={bollinger_std_dev}")
+        else:
+            # 数据不足时，使用合理的默认值
+            logger.warning(f"数据量不足以计算布林带指标(需要至少{bollinger_period}个数据点，当前只有{len(result_df)}个)")
+            
+            # 设置默认值
+            mean_price = result_df["close"].mean()
+            std_price = result_df["close"].std() if len(result_df) > 1 else mean_price * 0.02
+            
+            result_df["bb_middle"] = mean_price
+            result_df["bb_std"] = std_price
+            result_df["bb_upper"] = mean_price + bollinger_std_dev * std_price
+            result_df["bb_lower"] = mean_price - bollinger_std_dev * std_price
         
         # 5. 计算KDJ
         # 未成熟随机值（RSV）= (收盘价 - 最低价) / (最高价 - 最低价) * 100
@@ -350,8 +389,8 @@ class DataProcessor:
         tr2 = (result_df["high"] - result_df["close"].shift(1)).abs()
         tr3 = (result_df["low"] - result_df["close"].shift(1)).abs()
         tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
-        # 使用指数移动平均(EMA)计算ATR，符合Wilder平滑方法
-        result_df["atr_14"] = tr.ewm(alpha=1/14, adjust=False).mean().fillna(method="bfill")
+        # 使用Wilder's Smoothing计算ATR
+        result_df["atr_14"] = tr.ewm(alpha=1/14, adjust=False).mean()
         logger.info("计算ATR指标")
         
         # 8. 计算OBV (能量潮)
@@ -366,10 +405,57 @@ class DataProcessor:
         logger.info("计算OBV指标")
         
         # 9. 计算成交量的5日均线（用于量价齐升确认）
-        result_df["volume_ma_5"] = result_df["volume"].rolling(window=5).mean().fillna(method="bfill")
+        result_df["volume_ma_5"] = result_df["volume"].rolling(window=5).mean().fillna(method="ffill")
         logger.info("计算成交量5日均线")
         
+        # 10. 计算VWAP（成交量加权平均价格）
+        # 标准VWAP通常是日内指标，这里实现一个滚动的VWAP用于日线数据
+        # 避免前视偏差，只使用历史数据
+        if "volume" in result_df.columns:
+            # 计算典型价格 (TP)
+            result_df["typical_price"] = (result_df["high"] + result_df["low"] + result_df["close"]) / 3
+            # 计算价格乘以成交量
+            result_df["tp_volume"] = result_df["typical_price"] * result_df["volume"]
+            
+            # 计算20日滚动VWAP
+            window_size = 20
+            result_df["vwap_20"] = (
+                result_df["tp_volume"].rolling(window=window_size).sum() / 
+                result_df["volume"].rolling(window=window_size).sum()
+            )
+            
+            # 清理临时列
+            result_df = result_df.drop(columns=["typical_price", "tp_volume"])
+            logger.info(f"计算{window_size}日滚动VWAP")
+        
         logger.info(f"技术指标计算完成，共添加 {len(result_df.columns) - len(df.columns)} 个技术指标")
+        
+        # --- 添加保存数据的逻辑 ---
+        if hasattr(df, 'etf_code') and 'etf_code' in df.columns:
+            etf_code = df['etf_code'].iloc[0] if not df.empty else None
+        else:
+            etf_code = None
+            
+        if hasattr(df, 'trade_date') and 'trade_date' in df.columns:
+            # 确保结果 DataFrame 也有 trade_date 列
+            if 'trade_date' not in result_df.columns and 'date' in result_df.columns:
+                result_df['trade_date'] = result_df['date']
+                
+            # 保存数据到数据库
+            if self.engine and etf_code is not None:
+                success = upsert_df_to_sql(
+                    result_df,
+                    "etf_indicators",
+                    self.engine,
+                    unique_columns=["etf_code", "trade_date"],
+                )
+                if success:
+                    logger.info(
+                        f"ETF {etf_code} 技术指标数据已成功写入数据库 etf_indicators，共 {len(result_df)} 条记录"
+                    )
+                else:
+                    logger.error(f"ETF {etf_code} 技术指标数据写入数据库失败。")
+        # --- 保存逻辑结束 ---
         
         return result_df
     
@@ -397,8 +483,8 @@ class DataProcessor:
         processed_df = df.copy()
         
         # 确保日期列为datetime类型
-        if "date" in processed_df.columns:
-            processed_df["date"] = pd.to_datetime(processed_df["date"])
+        if "trade_date" in processed_df.columns:
+            processed_df["trade_date"] = pd.to_datetime(processed_df["trade_date"])
         
         # 处理金额列，将字符串转换为数值
         money_cols = [col for col in processed_df.columns if "金额" in col or "净额" in col or "成交额" in col]

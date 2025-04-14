@@ -221,6 +221,7 @@ class AKShareData:
         try:
             # 使用AKShare获取ETF历史数据 (fund_etf_hist_em 更常用)
             # df = ak.fund_etf_hist_sina(symbol=code) # Sina 接口可能不稳定或数据不全
+            code = code[2:]
             df = ak.fund_etf_hist_em(
                 symbol=code,
                 period="daily",
@@ -285,26 +286,27 @@ class AKShareData:
             # 移除包含 NaN 主键的行
             df_to_save.dropna(subset=["etf_code", "trade_date"], inplace=True)
 
-            if save and self.engine:
-                # --- 写入数据库 ---
-                success = upsert_df_to_sql(
-                    df_to_save,
-                    "etf_indicators",
-                    self.engine,
-                    unique_columns=["etf_code", "trade_date"],
-                )
-                if success:
-                    logger.info(
-                        f"ETF {code} 历史数据已成功写入数据库 etf_indicators，共 {len(df_to_save)} 条记录"
-                    )
-                else:
-                    logger.error(f"ETF {code} 历史数据写入数据库失败。")
-                # --- (可选) 保留CSV备份 ---
-                # file_path = self.raw_data_dir / f"etf_{code}_{start_date_req}_{end_date_req}.csv"
-                # df.to_csv(file_path, index=False)
-                # logger.info(f"ETF {code} 历史数据已备份至 {file_path}")
+            # 不再在这里保存数据，而是在 calculate_technical_indicators 方法计算完成后保存
+            # if save and self.engine:
+            #     # --- 写入数据库 ---
+            #     success = upsert_df_to_sql(
+            #         df_to_save,
+            #         "etf_indicators",
+            #         self.engine,
+            #         unique_columns=["etf_code", "trade_date"],
+            #     )
+            #     if success:
+            #         logger.info(
+            #             f"ETF {code} 历史数据已成功写入数据库 etf_indicators，共 {len(df_to_save)} 条记录"
+            #         )
+            #     else:
+            #         logger.error(f"ETF {code} 历史数据写入数据库失败。")
+            #     # --- (可选) 保留CSV备份 ---
+            #     # file_path = self.raw_data_dir / f"etf_{code}_{start_date_req}_{end_date_req}.csv"
+            #     # df.to_csv(file_path, index=False)
+            #     # logger.info(f"ETF {code} 历史数据已备份至 {file_path}")
 
-            return df  # 返回原始获取的 DataFrame
+            return df_to_save  # 返回处理后的 DataFrame 而不是原始的 df
 
         except Exception as e:
             logger.error(f"获取或处理ETF {code} 历史数据失败: {e}", exc_info=True)
@@ -698,7 +700,9 @@ class AKShareData:
         result["fund_flow"] = fund_flow
 
         # 5. 获取最新的市场情绪指标 (get_market_sentiment 内部处理保存)
-        sentiment = self.get_market_sentiment(save=save)  # 传递 save
+        sentiment = self.get_market_sentiment(
+            date="2024-04-12", save=True
+        )  # 使用一个过去的交易日测试
         result["sentiment"] = sentiment
 
         logger.info("所有数据获取完成")

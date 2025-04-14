@@ -145,20 +145,8 @@ class BacktestEngine:
         
         logger.info("开始生成交易信号")
         
-        # 应用布林带突破策略
-        df = self.strategy.bollinger_bands_breakout(df)
-        
-        # 应用MACD长短周期收敛发散策略
-        df = self.strategy.macd_convergence_divergence(df)
-        
-        # 应用EMA通道反转策略
-        df = self.strategy.ema_channel_reversal(df)
-        
-        # 应用量价齐升确认策略
-        df = self.strategy.volume_price_confirmation(df)
-        
-        # 组合信号
-        df = self.strategy.combine_signals(df)
+        # 使用融合策略生成信号
+        df = self.strategy.combine_strategies(df)
         
         logger.info("交易信号生成完成")
         
@@ -219,6 +207,7 @@ class BacktestEngine:
         # 初始化资金和持仓
         capital = self.initial_capital
         position = 0
+        max_position = 0  # 记录最大持仓，用于计算部分仓位
         trades = []
         equity_curve = []
         
@@ -235,14 +224,19 @@ class BacktestEngine:
                 'capital': capital,
                 'position': position,
                 'close': close,
-                'market_value': market_value
+                'market_value': market_value,
+                'signal': signal
             })
             
             # 处理交易信号
-            if signal == 1 and position <= 0:  # 买入信号
-                # 计算买入数量（全仓买入）
+            if signal > 0 and position <= 0:  # 买入信号（包括完全买入和试探性买入）
+                # 计算买入数量（根据信号强度决定仓位）
                 buy_price = close * (1 + self.slippage)  # 考虑滑点
-                shares = int(capital / buy_price)
+                
+                # 根据信号强度决定仓位大小
+                position_ratio = 1.0 if signal >= 1.0 else 0.5  # 完全买入或试探性买入
+                
+                shares = int(capital * position_ratio / buy_price)
                 cost = shares * buy_price
                 commission_fee = cost * self.commission  # 手续费
                 
@@ -250,6 +244,7 @@ class BacktestEngine:
                     # 更新资金和持仓
                     capital -= (cost + commission_fee)
                     position += shares
+                    max_position = max(max_position, position)  # 更新最大持仓
                     
                     # 记录交易
                     trades.append({
@@ -258,34 +253,71 @@ class BacktestEngine:
                         'price': buy_price,
                         'shares': shares,
                         'cost': cost,
-                        'commission': commission_fee
+                        'commission': commission_fee,
+                        'position_ratio': position_ratio,
+                        'signal_strength': signal
                     })
                     
-                    logger.info(f"买入 {shares} 股 {symbol}，价格 {buy_price:.2f}，成本 {cost:.2f}，手续费 {commission_fee:.2f}")
+                    signal_type = "完全买入" if signal >= 1.0 else "试探性买入"
+                    logger.info(f"{signal_type} {shares} 股 {symbol}，价格 {buy_price:.2f}，成本 {cost:.2f}，手续费 {commission_fee:.2f}")
             
-            elif signal == -1 and position > 0:  # 卖出信号
-                # 计算卖出金额
-                sell_price = close * (1 - self.slippage)  # 考虑滑点
-                proceeds = position * sell_price
-                commission_fee = proceeds * self.commission  # 手续费
+            elif signal > 0 and position > 0 and signal >= 1.0 and position < max_position:
+                # 持有部分仓位时收到完全买入信号，加仓至满仓
+                buy_price = close * (1 + self.slippage)
+                additional_shares = int((max_position - position) * 0.8)  # 加仓80%差额
                 
-                # 更新资金和持仓
-                capital += (proceeds - commission_fee)
+                if additional_shares > 0:
+                    cost = additional_shares * buy_price
+                    commission_fee = cost * self.commission
+                    
+                    # 确保有足够资金
+                    if cost + commission_fee <= capital:
+                        capital -= (cost + commission_fee)
+                        position += additional_shares
+                        
+                        trades.append({
+                            'date': date,
+                            'type': 'add',
+                            'price': buy_price,
+                            'shares': additional_shares,
+                            'cost': cost,
+                            'commission': commission_fee,
+                            'signal_strength': signal
+                        })
+                        
+                        logger.info(f"加仓 {additional_shares} 股 {symbol}，价格 {buy_price:.2f}，成本 {cost:.2f}，手续费 {commission_fee:.2f}")
+            
+            elif signal < 0 and position > 0:  # 卖出信号（包括完全卖出和减仓）
+                # 根据信号强度决定卖出比例
+                sell_ratio = 1.0 if signal <= -1.0 else 0.5  # 完全卖出或减仓
                 
-                # 记录交易
-                trades.append({
-                    'date': date,
-                    'type': 'sell',
-                    'price': sell_price,
-                    'shares': position,
-                    'proceeds': proceeds,
-                    'commission': commission_fee
-                })
+                # 计算卖出股数
+                shares_to_sell = int(position * sell_ratio)
                 
-                logger.info(f"卖出 {position} 股 {symbol}，价格 {sell_price:.2f}，收入 {proceeds:.2f}，手续费 {commission_fee:.2f}")
-                
-                # 清空持仓
-                position = 0
+                if shares_to_sell > 0:
+                    # 计算卖出金额
+                    sell_price = close * (1 - self.slippage)  # 考虑滑点
+                    proceeds = shares_to_sell * sell_price
+                    commission_fee = proceeds * self.commission  # 手续费
+                    
+                    # 更新资金和持仓
+                    capital += (proceeds - commission_fee)
+                    position -= shares_to_sell
+                    
+                    # 记录交易
+                    trades.append({
+                        'date': date,
+                        'type': 'sell',
+                        'price': sell_price,
+                        'shares': shares_to_sell,
+                        'proceeds': proceeds,
+                        'commission': commission_fee,
+                        'position_ratio': sell_ratio,
+                        'signal_strength': signal
+                    })
+                    
+                    signal_type = "完全卖出" if signal <= -1.0 else "减仓"
+                    logger.info(f"{signal_type} {shares_to_sell} 股 {symbol}，价格 {sell_price:.2f}，收入 {proceeds:.2f}，手续费 {commission_fee:.2f}")
         
         # 最后一天，如果还有持仓，强制平仓
         if position > 0:
@@ -443,7 +475,7 @@ class BacktestEngine:
             plt.show()
             logger.info("回测结果图表已显示")
     
-    def save_results(self, symbol, save_dir='results/backtest', save_to_db=True):
+    def save_results(self, symbol, save_dir='results/backtest', save_to_db=False):
         """
         保存回测结果到文件和数据库
 

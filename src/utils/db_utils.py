@@ -181,10 +181,11 @@ def upsert_df_to_sql(df: pd.DataFrame, table_name: str, engine, unique_columns: 
     for col in df_copy.select_dtypes(include=['datetime64[ns]', 'datetime64[ns, UTC]']).columns:
         df_copy[col] = df_copy[col].apply(lambda x: None if pd.isna(x) else x)
 
-    # 处理其他可能的 NaN/inf (根据需要添加)
-    # 例如，将 NaN 数值转为 None (如果列允许 NULL)
-    # df_copy = df_copy.replace([np.inf, -np.inf], np.nan)
-    # df_copy = df_copy.where(pd.notnull(df_copy), None)
+    # 处理所有NaN/inf值，转换为None (MySQL中的NULL)
+    # 这解决了pymysql.err.ProgrammingError: nan can not be used with MySQL的问题
+    import numpy as np
+    df_copy = df_copy.replace([np.inf, -np.inf], np.nan)
+    df_copy = df_copy.where(pd.notnull(df_copy), None)
 
     # --- 构建 SQL 语句 ---
     cols = df_copy.columns.tolist()
