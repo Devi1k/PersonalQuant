@@ -12,6 +12,9 @@ import numpy as np
 from datetime import datetime, timedelta
 import logging
 from pathlib import Path
+# --- 新增导入 ---
+from ..utils.db_utils import get_db_engine, upsert_df_to_sql, load_config
+# --- ---
 
 from src.data.akshare_data import AKShareData
 from src.data.data_processor import DataProcessor
@@ -49,8 +52,15 @@ class DataInterface:
         self._industry_etfs_cache = None
         self._etf_history_cache = {}
         self._index_history_cache = {}
-        
+
+        # --- 初始化数据库引擎 ---
+        self.config = load_config()
+        self.engine = get_db_engine(self.config)
+        # --- ---
+
         logger.info(f"数据接口模块初始化完成，原始数据目录: {raw_data_dir}, 处理后数据目录: {processed_data_dir}")
+        if not self.engine:
+             logger.warning("数据库引擎初始化失败，部分数据将无法保存到数据库。")
     
     def get_etf_list(self, use_cache=True, force_update=False):
         """
@@ -285,17 +295,19 @@ class DataInterface:
         
         return df
     
-    def get_market_sentiment(self, date=None, force_update=False):
+    def get_market_sentiment(self, date=None, force_update=False, save_to_db=True):
         """
-        获取市场情绪指标数据
-        
+        获取市场情绪指标数据并写入数据库
+
         Parameters
         ----------
         date : str, default None
             日期，格式 "YYYY-MM-DD"，默认为今天
         force_update : bool, default False
-            是否强制更新数据
-            
+            是否强制更新数据 (当前主要影响数据获取，不影响DB写入)
+        save_to_db : bool, default True
+            是否将获取并处理后的数据写入数据库
+
         Returns
         -------
         dict
@@ -304,16 +316,17 @@ class DataInterface:
         if date is None:
             date = datetime.now().strftime("%Y-%m-%d")
         
-        # 构建文件名
-        file_name = f"market_sentiment_{date.replace('-', '')}.csv"
-        file_path = self.processed_data_dir / file_name
-        
-        # 如果文件存在且不强制更新，直接读取
-        if file_path.exists() and not force_update:
-            logger.info(f"从文件 {file_path} 读取市场情绪指标数据")
-            df = pd.read_csv(file_path)
-            # 转换为字典
-            return df.iloc[0].to_dict() if not df.empty else {}
+        # --- 移除从 CSV 读取的逻辑 ---
+        # # 构建文件名
+        # file_name = f"market_sentiment_{date.replace('-', '')}.csv"
+        # file_path = self.processed_data_dir / file_name
+        # # 如果文件存在且不强制更新，直接读取
+        # if file_path.exists() and not force_update:
+        #     logger.info(f"从文件 {file_path} 读取市场情绪指标数据")
+        #     df = pd.read_csv(file_path)
+        #     # 转换为字典
+        #     return df.iloc[0].to_dict() if not df.empty else {}
+        # --- ---
         
         # 获取最新数据
         sentiment_dict = self.data_fetcher.get_market_sentiment(date)
@@ -321,8 +334,51 @@ class DataInterface:
         # 处理数据
         sentiment_dict = self.data_processor.process_market_sentiment(sentiment_dict)
         
-        # 保存处理后的数据
-        pd.DataFrame([sentiment_dict]).to_csv(file_path, index=False)
+        # --- 保存到数据库 ---
+        if save_to_db and self.engine and sentiment_dict:
+            try:
+                sentiment_df = pd.DataFrame([sentiment_dict])
+                # 确保 trade_date 列存在且为 date 类型
+                if 'trade_date' in sentiment_df.columns:
+                    sentiment_df['trade_date'] = pd.to_datetime(sentiment_df['trade_date']).dt.date
+
+                    # 选择数据库列
+                    db_columns = ['trade_date', 'up_limit_count', 'down_limit_count', 'up_down_ratio'] # 根据 market_sentiment 表结构
+                    db_columns_present = [col for col in db_columns if col in sentiment_df.columns]
+                    sentiment_df_to_save = sentiment_df[db_columns_present].copy()
+
+                    # 转换数据类型 (upsert_df_to_sql 内部会处理部分类型，但这里可以预处理)
+                    if 'up_limit_count' in sentiment_df_to_save.columns:
+                        sentiment_df_to_save['up_limit_count'] = sentiment_df_to_save['up_limit_count'].astype('Int64')
+                    if 'down_limit_count' in sentiment_df_to_save.columns:
+                         sentiment_df_to_save['down_limit_count'] = sentiment_df_to_save['down_limit_count'].astype('Int64')
+                    if 'up_down_ratio' in sentiment_df_to_save.columns:
+                         sentiment_df_to_save['up_down_ratio'] = pd.to_numeric(sentiment_df_to_save['up_down_ratio'], errors='coerce')
+
+                    # 移除 NaN 主键行
+                    sentiment_df_to_save.dropna(subset=['trade_date'], inplace=True)
+
+                    if not sentiment_df_to_save.empty:
+                        success = upsert_df_to_sql(sentiment_df_to_save, 'market_sentiment', self.engine, unique_columns=['trade_date'])
+                        if success:
+                            logger.info(f"市场情绪数据 ({date}) 已成功写入数据库 market_sentiment")
+                        else:
+                            logger.error(f"市场情绪数据 ({date}) 写入数据库失败")
+                    else:
+                        logger.warning("没有有效的市场情绪数据可写入数据库。")
+                else:
+                    logger.error("处理后的市场情绪数据缺少 'trade_date' 列，无法写入数据库。")
+
+            except Exception as e:
+                logger.error(f"保存市场情绪数据到数据库时出错: {e}", exc_info=True)
+        elif save_to_db and not self.engine:
+            logger.error("无法连接数据库，市场情绪数据未保存到数据库。")
+        # --- ---
+
+        # --- 移除 CSV 保存 ---
+        # pd.DataFrame([sentiment_dict]).to_csv(file_path, index=False)
+        # logger.info(f"市场情绪数据已保存至 {file_path}") # 保留日志或移除
+        # --- ---
         
         return sentiment_dict
     

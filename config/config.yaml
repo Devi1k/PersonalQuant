@@ -1,10 +1,19 @@
 # 量化交易系统配置文件
 
+# 数据库配置
+database:
+  type: "mysql"
+  host: "localhost"
+  port: 3306
+  database: "quant_db"
+  username: "root"
+  password: "12345678" # 请替换为您的真实密码
+
 # 数据源配置
 data_source:
   provider: "akshare"  # 可选: tushare, joinquant
-  etf_list_file: "data/raw/etf_list.csv"
-  
+  etf_list_file: "data/raw/etf_list.csv" # 这个可以考虑移除或保留作为备份
+
 # 回测配置
 backtest:
   start_date: "2018-01-01"
@@ -20,25 +29,25 @@ strategy:
     # 基本移动平均线参数
     fast_ma: 20
     slow_ma: 60
-    
+
     # 布林带参数
     bollinger_period: 20
     bollinger_std_dev: 2.0
-    
+
     # MACD参数
     macd_short_period: 21  # 1个月期EMA
     macd_long_period: 200  # 200日EMA
-    
+
     # 多维周期参数
     timeframes: [5, 15, 60]  # 5分钟/15分钟/60分钟
-    
+
     # 对冲型反转策略参数
     ema_channel_period: 144  # 144日EMA
     ema_channel_width: 0.05  # 通道宽度（占价格的百分比）
-    
+
     # 量价齐升确认参数
     volume_threshold: 1.2  # 成交量大于5日均量的倍数
-    
+
     # 信号组合权重
     signal_weights:
       bb_signal: 1.0
@@ -46,11 +55,11 @@ strategy:
       multi_timeframe_signal: 2.0
       ema_reversal_signal: 1.2
       volume_price_signal: 0.8
-  
+
   rotation:
     lookback_period: 5  # 行业强度排名的回看天数
     top_n_industries: 3  # 选择前几名行业
-  
+
   risk_control:
     initial_stop_loss_atr_multiple: 2.0  # 初始止损为入场价 - 2*ATR
     trailing_stop_percentage: 0.03      # 3%回撤止损
@@ -63,7 +72,7 @@ trading:
   schedule_time: "14:00"  # 每日运行策略的时间
   final_check_time: "14:50" # 最后信号确认时间
 
-  
+
 # 日志设置
 logging:
   level: "INFO"  # DEBUG, INFO, WARNING, ERROR, CRITICAL

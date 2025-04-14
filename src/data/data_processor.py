@@ -12,6 +12,9 @@ import numpy as np
 from datetime import datetime, timedelta
 import logging
 from pathlib import Path
+# --- 新增导入 ---
+from ..utils.db_utils import get_db_engine, upsert_df_to_sql, load_config
+# --- ---
 
 # 设置日志
 logger = logging.getLogger(__name__)
@@ -36,8 +39,15 @@ class DataProcessor:
         # 确保目录存在
         self.raw_data_dir.mkdir(parents=True, exist_ok=True)
         self.processed_data_dir.mkdir(parents=True, exist_ok=True)
-        
+
+        # --- 初始化数据库引擎 ---
+        self.config = load_config()
+        self.engine = get_db_engine(self.config)
+        # --- ---
+
         logger.info(f"数据处理模块初始化完成，原始数据目录: {raw_data_dir}, 处理后数据目录: {processed_data_dir}")
+        if not self.engine:
+             logger.warning("数据库引擎初始化失败，处理后的数据将无法保存到数据库。")
     
     def process_etf_history(self, df, fill_missing=True, detect_outliers=True):
         """
@@ -466,40 +476,93 @@ class DataProcessor:
         
         return processed_dict
     
-    def save_processed_data(self, df, name, date=None):
+    def save_processed_data(self, df, name, date=None, etf_code=None, save_to_db=True):
         """
-        保存处理后的数据
-        
+        保存处理后的数据到数据库 (如果适用)
+
         Parameters
         ----------
         df : pandas.DataFrame
             处理后的数据
         name : str
-            数据名称，用于构建文件名
+            数据名称 (用于判断是否为指标数据)
         date : str, default None
-            日期，格式 "YYYY-MM-DD"，默认为今天
-            
+            日期 (当前未使用)
+        etf_code : str, default None
+            相关的 ETF 代码 (如果保存的是 ETF 指标)
+        save_to_db : bool, default True
+            是否尝试保存到数据库
+
         Returns
         -------
-        str
-            保存的文件路径
+        bool
+            数据库保存是否成功 (如果尝试了保存)
         """
         if df.empty:
             logger.warning(f"要保存的{name}数据为空")
             return ""
         
-        if date is None:
-            date = datetime.now().strftime("%Y-%m-%d")
-        
-        # 构建文件名
-        file_name = f"{name}_{date.replace('-', '')}.csv"
-        file_path = self.processed_data_dir / file_name
-        
-        # 保存数据
-        df.to_csv(file_path, index=False, encoding="utf-8-sig")
-        logger.info(f"{name}数据已保存至 {file_path}，共 {len(df)} 条记录")
-        
-        return str(file_path)
+        # if date is None:
+        #     date = datetime.now().strftime("%Y-%m-%d") # date 参数当前未使用
+
+        db_saved = False
+        if save_to_db and self.engine:
+            # 尝试根据 name 判断是否为 ETF 指标数据
+            # 注意：这种判断方式比较脆弱，更好的方式是调用者明确指定目标表
+            if "etf" in name.lower() or "indicator" in name.lower():
+                if etf_code is None and 'etf_code' not in df.columns:
+                    logger.error(f"无法将 {name} 数据写入数据库：缺少 etf_code。")
+                elif 'trade_date' not in df.columns:
+                     logger.error(f"无法将 {name} 数据写入数据库：缺少 trade_date 列。")
+                else:
+                    logger.info(f"尝试将处理后的 {name} 数据 (ETF: {etf_code or '从df获取'}) 写入数据库 etf_indicators...")
+                    df_to_save = df.copy()
+                    if etf_code and 'etf_code' not in df_to_save.columns:
+                        df_to_save['etf_code'] = etf_code
+
+                    # 确保日期是 date 类型
+                    df_to_save['trade_date'] = pd.to_datetime(df_to_save['trade_date']).dt.date
+
+                    # 选择与 etf_indicators 表匹配的列 (包括主键和指标列)
+                    # 需要动态获取 etf_indicators 的列名或硬编码已知列
+                    # 这里假设 df 包含了所有需要的指标列
+                    indicator_cols = list(df_to_save.columns) # 获取所有列
+                    unique_cols = ['etf_code', 'trade_date']
+                    # 确保主键列存在
+                    if not all(col in indicator_cols for col in unique_cols):
+                         logger.error(f"DataFrame 中缺少主键列 {unique_cols}，无法写入 etf_indicators。")
+                    else:
+                        try:
+                            # 移除主键为空的行
+                            df_to_save.dropna(subset=unique_cols, inplace=True)
+                            if not df_to_save.empty:
+                                # 使用 upsert 更新指标
+                                success = upsert_df_to_sql(df_to_save[indicator_cols], 'etf_indicators', self.engine, unique_columns=unique_cols)
+                                if success:
+                                    logger.info(f"成功将 {len(df_to_save)} 条处理后的 {name} 数据更新到数据库 etf_indicators。")
+                                    db_saved = True
+                                else:
+                                    logger.error(f"处理后的 {name} 数据写入数据库 etf_indicators 失败。")
+                            else:
+                                logger.warning("处理后的数据在移除空主键后变为空，未写入数据库。")
+                        except Exception as e:
+                            logger.error(f"保存处理后的 {name} 数据到 etf_indicators 时出错: {e}", exc_info=True)
+            else:
+                # 对于其他类型的数据，暂不写入数据库
+                logger.warning(f"数据库保存逻辑未针对数据类型 '{name}' 实现，数据未保存到数据库。")
+        elif save_to_db and not self.engine:
+             logger.error("无法连接数据库，处理后的数据未保存。")
+
+        # --- 移除 CSV 保存 ---
+        # # 构建文件名
+        # file_name = f"{name}_{date.replace('-', '')}.csv"
+        # file_path = self.processed_data_dir / file_name
+        # # 保存数据
+        # df.to_csv(file_path, index=False, encoding="utf-8-sig")
+        # logger.info(f"{name}数据已保存至 {file_path}，共 {len(df)} 条记录")
+        # return str(file_path) # 返回文件路径
+
+        return db_saved # 返回数据库保存是否成功
 
 
 # 测试代码

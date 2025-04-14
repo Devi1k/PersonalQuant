@@ -5,6 +5,7 @@ USE quant_db;
 
 -- 创建ETF基础信息表
 CREATE TABLE IF NOT EXISTS etf_list (
+    id INT NOT NULL AUTO_INCREMENT COMMENT '自增主键',
     code VARCHAR(6) NOT NULL COMMENT 'ETF代码',
     name VARCHAR(50) NOT NULL COMMENT 'ETF名称',
     latest_price DECIMAL(10, 2) COMMENT '最新价',
@@ -19,12 +20,14 @@ CREATE TABLE IF NOT EXISTS etf_list (
     volume BIGINT COMMENT '成交量(手)',
     amount DECIMAL(20, 2) COMMENT '成交额',
     update_date DATE NOT NULL COMMENT '数据更新日期',
-    PRIMARY KEY (code),
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_code (code),
     INDEX idx_update_date (update_date)
 ) ENGINE=InnoDB COMMENT='ETF基础信息表';
 
 -- 创建ETF指标数据表
 CREATE TABLE IF NOT EXISTS etf_indicators (
+    id INT NOT NULL AUTO_INCREMENT COMMENT '自增ID',
     etf_code VARCHAR(6) NOT NULL COMMENT 'ETF代码',
     trade_date DATE NOT NULL COMMENT '交易日期',
     open DECIMAL(10, 2) COMMENT '开盘价',
@@ -61,9 +64,10 @@ CREATE TABLE IF NOT EXISTS etf_indicators (
     atr_14 DECIMAL(10, 4) COMMENT '14日ATR',
     obv BIGINT COMMENT 'OBV指标',
     volume_ma_5 BIGINT COMMENT '成交量5日均线',
-    PRIMARY KEY (etf_code, trade_date),
-    INDEX idx_trade_date (trade_date),
-    CONSTRAINT fk_etf_indicators_etf_list FOREIGN KEY (etf_code) REFERENCES etf_list (code) ON DELETE CASCADE ON UPDATE CASCADE
+    PRIMARY KEY (id, trade_date),
+    UNIQUE KEY uk_etf_date (etf_code, trade_date),
+    INDEX idx_trade_date (trade_date)
+--  CONSTRAINT fk_etf_indicators_etf_list FOREIGN KEY (etf_code) REFERENCES etf_list (code) ON DELETE CASCADE ON UPDATE CASCADE -- Removed due to partitioning incompatibility
 ) ENGINE=InnoDB COMMENT='ETF技术指标表'
 PARTITION BY RANGE (YEAR(trade_date)) (
     PARTITION p2020 VALUES LESS THAN (2021),
@@ -77,11 +81,14 @@ PARTITION BY RANGE (YEAR(trade_date)) (
 
 -- 创建市场情绪数据表
 CREATE TABLE IF NOT EXISTS market_sentiment (
+    id INT NOT NULL AUTO_INCREMENT COMMENT '自增ID',
     trade_date DATE NOT NULL COMMENT '交易日期',
     up_limit_count INT NOT NULL COMMENT '涨停数量',
     down_limit_count INT NOT NULL COMMENT '跌停数量',
     up_down_ratio DECIMAL(10, 4) COMMENT '涨跌比',
-    PRIMARY KEY (trade_date)
+    margin_balance DECIMAL(20, 2) COMMENT '融资融券余额',
+    PRIMARY KEY (id, trade_date),
+    UNIQUE KEY uk_trade_date (trade_date)
 ) ENGINE=InnoDB COMMENT='市场情绪数据表'
 PARTITION BY RANGE (YEAR(trade_date)) (
     PARTITION p2020 VALUES LESS THAN (2021),
@@ -110,7 +117,7 @@ CREATE TABLE IF NOT EXISTS industry_fund_flow (
     small_net_inflow DECIMAL(20, 2) COMMENT '今日小单净流入-净额',
     small_net_inflow_pct DECIMAL(10, 4) COMMENT '今日小单净流入-净占比',
     top_stock VARCHAR(50) COMMENT '今日主力净流入最大股',
-    PRIMARY KEY (id),
+    PRIMARY KEY (id, trade_date),
     UNIQUE KEY uk_industry_date (industry_name, trade_date),
     INDEX idx_trade_date (trade_date),
     INDEX idx_industry_name (industry_name)
@@ -181,13 +188,14 @@ SELECT
     ms.up_limit_count,
     ms.down_limit_count,
     ms.up_down_ratio,
+    ms.margin_balance,
     COUNT(DISTINCT iff.industry_name) AS industry_count,
     SUM(CASE WHEN iff.main_net_inflow > 0 THEN 1 ELSE 0 END) AS inflow_industry_count,
     SUM(CASE WHEN iff.main_net_inflow < 0 THEN 1 ELSE 0 END) AS outflow_industry_count,
     SUM(iff.main_net_inflow) AS total_main_net_inflow
 FROM market_sentiment ms
 LEFT JOIN industry_fund_flow iff ON ms.trade_date = iff.trade_date
-GROUP BY ms.trade_date, ms.up_limit_count, ms.down_limit_count, ms.up_down_ratio;
+GROUP BY ms.trade_date, ms.up_limit_count, ms.down_limit_count, ms.up_down_ratio, ms.margin_balance;
 
 -- 添加数据库用户和权限
 -- CREATE USER 'quant_user'@'localhost' IDENTIFIED BY 'password';
