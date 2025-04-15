@@ -253,6 +253,73 @@ def upsert_df_to_sql(df: pd.DataFrame, table_name: str, engine, unique_columns: 
             conn.close()
 
 
+def query_etf_history(engine, etf_code, start_date=None, end_date=None, fields=None):
+    """
+    从数据库中查询ETF历史数据
+
+    Args:
+        engine: SQLAlchemy 数据库引擎
+        etf_code (str): ETF代码，如 "510300"
+        start_date (str, optional): 开始日期，格式 "YYYY-MM-DD"
+        end_date (str, optional): 结束日期，格式 "YYYY-MM-DD"
+        fields (list, optional): 需要查询的字段列表，默认为全部字段
+
+    Returns:
+        pandas.DataFrame: 查询结果
+    """
+    if not engine:
+        logger.error("数据库引擎为空，无法查询ETF历史数据")
+        return pd.DataFrame()
+
+    try:
+        # 构建基本查询
+        if fields and isinstance(fields, list):
+            # 确保必要的字段总是被包含
+            if 'etf_code' not in fields:
+                fields.append('etf_code')
+            if 'trade_date' not in fields:
+                fields.append('trade_date')
+            columns_str = ", ".join(fields)
+        else:
+            columns_str = "*"  # 查询所有字段
+
+        # 构建查询条件
+        conditions = [f"etf_code = '{etf_code}'"]
+        if start_date:
+            conditions.append(f"trade_date >= '{start_date}'")
+        if end_date:
+            conditions.append(f"trade_date <= '{end_date}'")
+
+        where_clause = " AND ".join(conditions)
+
+        # 构建完整的SQL查询
+        query = f"""
+        SELECT {columns_str}
+        FROM etf_indicators
+        WHERE {where_clause}
+        ORDER BY trade_date
+        """
+
+        # 执行查询
+        logger.info(f"查询ETF {etf_code} 的历史数据，时间范围: {start_date or '最早'} 至 {end_date or '最新'}")
+        df = pd.read_sql(query, engine)
+
+        if df.empty:
+            logger.warning(f"未找到ETF {etf_code} 的历史数据")
+            return pd.DataFrame()
+
+        # 转换日期列为日期类型
+        if 'trade_date' in df.columns:
+            df['trade_date'] = pd.to_datetime(df['trade_date'])
+
+        logger.info(f"成功查询到ETF {etf_code} 的历史数据，共 {len(df)} 条记录")
+        return df
+
+    except Exception as e:
+        logger.error(f"查询ETF {etf_code} 的历史数据时出错: {e}")
+        return pd.DataFrame()
+
+
 # --- 测试代码 (可选) ---
 if __name__ == '__main__':
     # 测试代码
@@ -266,36 +333,72 @@ if __name__ == '__main__':
             logger.info("数据库引擎创建成功。")
 
             # --- 测试 df_to_sql (append) ---
-            logger.info("--- 测试 df_to_sql (append) ---")
-            test_data_append = {'col1': [1, 2], 'col2': ['A', 'B']}
-            test_df_append = pd.DataFrame(test_data_append)
-            # 假设存在一个测试表 test_append_table (col1 INT PRIMARY KEY, col2 VARCHAR(10))
-            # 请手动创建此表用于测试: CREATE TABLE test_append_table (col1 INT PRIMARY KEY, col2 VARCHAR(10));
-            # df_to_sql(test_df_append, 'test_append_table', test_engine, if_exists='append', index=False)
+            # logger.info("--- 测试 df_to_sql (append) ---")
+            # test_data_append = {'col1': [1, 2], 'col2': ['A', 'B']}
+            # test_df_append = pd.DataFrame(test_data_append)
+            # # 假设存在一个测试表 test_append_table (col1 INT PRIMARY KEY, col2 VARCHAR(10))
+            # # 请手动创建此表用于测试: CREATE TABLE test_append_table (col1 INT PRIMARY KEY, col2 VARCHAR(10));
+            # # df_to_sql(test_df_append, 'test_append_table', test_engine, if_exists='append', index=False)
 
-            # --- 测试 upsert_df_to_sql ---
-            logger.info("--- 测试 upsert_df_to_sql ---")
-            test_data_upsert = {
-                'etf_code': ['510300', '159915', '510300'], # 重复的 etf_code
-                'trade_date': ['2024-01-01', '2024-01-01', '2024-01-02'],
-                'close': [3.50, 1.20, 3.55],
-                'volume': [10000, 5000, 12000]
-            }
-            test_df_upsert = pd.DataFrame(test_data_upsert)
+            # # --- 测试 upsert_df_to_sql ---
+            # logger.info("--- 测试 upsert_df_to_sql ---")
+            # test_data_upsert = {
+            #     'etf_code': ['510300', '159915', '510300'], # 重复的 etf_code
+            #     'trade_date': ['2024-01-01', '2024-01-01', '2024-01-02'],
+            #     'close': [3.50, 1.20, 3.55],
+            #     'volume': [10000, 5000, 12000]
+            # }
+            # test_df_upsert = pd.DataFrame(test_data_upsert)
             # 假设 etf_indicators 表存在，并且 (etf_code, trade_date) 是唯一键或主键
             # upsert_df_to_sql(test_df_upsert, 'etf_indicators', test_engine, unique_columns=['etf_code', 'trade_date'])
 
-            # --- 测试写入 etf_list ---
-            logger.info("--- 测试写入 etf_list ---")
-            etf_list_data = {
-                'code': ['510050', '510300'],
-                'name': ['上证50ETF', '沪深300ETF'],
-                'latest_price': [2.5, 3.5],
-                'update_date': ['2024-04-13', '2024-04-13'] # 注意类型匹配
-            }
-            etf_list_df = pd.DataFrame(etf_list_data)
-            # etf_list 的主键是 code
-            # upsert_df_to_sql(etf_list_df, 'etf_list', test_engine, unique_columns=['code'])
+            # --- 测试 query_etf_history ---
+            logger.info("--- 测试 query_etf_history ---")
+            # 测试查询所有字段
+            logger.info("测试查询所有字段:")
+            test_result_all = query_etf_history(
+                engine=test_engine,
+                etf_code='510300',
+                start_date='2024-01-01',
+                end_date='2024-01-31'
+            )
+            if not test_result_all.empty:
+                logger.info(f"查询成功，获取到 {len(test_result_all)} 条记录")
+                logger.info(f"字段列表: {list(test_result_all.columns)}")
+                logger.info(f"前3条记录:\n{test_result_all.head(3)}")
+            else:
+                logger.warning("查询结果为空，请确认数据库中是否有相关数据")
+            
+            # 测试查询特定字段
+            logger.info("测试查询特定字段:")
+            test_fields = ['etf_code', 'trade_date', 'open', 'high', 'low', 'close', 'volume']
+            test_result_fields = query_etf_history(
+                engine=test_engine,
+                etf_code='510300',
+                start_date='2024-01-01',
+                end_date='2024-01-31',
+                fields=test_fields
+            )
+            if not test_result_fields.empty:
+                logger.info(f"查询成功，获取到 {len(test_result_fields)} 条记录")
+                logger.info(f"字段列表: {list(test_result_fields.columns)}")
+                logger.info(f"前3条记录:\n{test_result_fields.head(3)}")
+            else:
+                logger.warning("查询结果为空，请确认数据库中是否有相关数据")
+            
+            # 测试不同的ETF代码
+            logger.info("测试查询不同的ETF代码:")
+            test_result_other = query_etf_history(
+                engine=test_engine,
+                etf_code='159915',
+                start_date='2024-01-01',
+                end_date='2024-01-31'
+            )
+            if not test_result_other.empty:
+                logger.info(f"查询成功，获取到 {len(test_result_other)} 条记录")
+                logger.info(f"前3条记录:\n{test_result_other.head(3)}")
+            else:
+                logger.warning("查询结果为空，请确认数据库中是否有相关数据")
 
             logger.info("测试完成。请检查数据库和日志文件 'logs/db_utils_test.log'。")
         else:

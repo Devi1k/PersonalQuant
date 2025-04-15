@@ -16,7 +16,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 import json
 # --- 新增导入 ---
-from ..utils.db_utils import get_db_engine, df_to_sql, load_config
+from ..utils.db_utils import get_db_engine, df_to_sql, load_config, query_etf_history
 # --- ---
 
 # 导入自定义模块
@@ -53,6 +53,10 @@ class BacktestEngine:
         # 数据处理器
         self.data_processor = DataProcessor()
         
+        # 初始化数据库引擎
+        self.config_db = load_config()
+        self.engine = get_db_engine(self.config_db)
+        
         # 策略
         self.strategy = TrendStrategy(self.config)
         
@@ -85,7 +89,7 @@ class BacktestEngine:
     
     def load_data(self, symbol):
         """
-        加载历史数据
+        从数据库加载历史数据
         
         Parameters
         ----------
@@ -97,32 +101,39 @@ class BacktestEngine:
         pandas.DataFrame
             历史数据
         """
-        # 构建数据文件路径
-        file_path = Path(f"data/raw/{symbol}_{self.start_date.replace('-', '')}_{self.end_date.replace('-', '')}.csv")
-        
-        if not file_path.exists():
-            logger.error(f"数据文件不存在: {file_path}")
-            return pd.DataFrame()
-        
         try:
-            # 加载数据
-            df = pd.read_csv(file_path)
+            logger.info(f"开始从数据库加载 {symbol} 的历史数据，时间区间: {self.start_date} 至 {self.end_date}")
             
-            # 处理数据
-            df = self.data_processor.process_etf_history(df)
+            if not self.engine:
+                logger.error("数据库引擎未初始化，无法加载数据")
+                return pd.DataFrame()
             
-            # 计算技术指标，传入配置参数
-            df = self.data_processor.calculate_technical_indicators(df, self.config)
+            # 使用 query_etf_history 函数从数据库查询数据
+            df = query_etf_history(
+                engine=self.engine,
+                etf_code=symbol,
+                start_date=self.start_date,
+                end_date=self.end_date,
+                fields=None  # 获取所有字段
+            )
+            
+            if df.empty:
+                logger.error(f"未能从数据库获取到 {symbol} 的历史数据")
+                return pd.DataFrame()
+            
+            # 确保日期列名一致
+            if 'trade_date' in df.columns and 'date' not in df.columns:
+                df['date'] = df['trade_date']
             
             # 过滤日期范围
             if 'date' in df.columns:
                 df['date'] = pd.to_datetime(df['date'])
                 df = df[(df['date'] >= self.start_date) & (df['date'] <= self.end_date)]
             
-            logger.info(f"成功加载并处理 {symbol} 的历史数据，共 {len(df)} 条记录")
+            logger.info(f"成功从数据库加载 {symbol} 的历史数据，共 {len(df)} 条记录")
             return df
         except Exception as e:
-            logger.error(f"加载历史数据失败: {e}")
+            logger.error(f"从数据库加载历史数据失败: {e}")
             return pd.DataFrame()
     
     def generate_signals(self, df):
