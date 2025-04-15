@@ -319,6 +319,36 @@ def query_etf_history(engine, etf_code, start_date=None, end_date=None, fields=N
         logger.error(f"查询ETF {etf_code} 的历史数据时出错: {e}")
         return pd.DataFrame()
 
+def query_etf_list(engine):
+    """
+    从数据库中查询 ETF List 表的所有内容
+    
+    Args:
+        engine: SQLAlchemy 数据库引擎
+        
+    Returns:
+        pandas.DataFrame: 包含所有 ETF 基础信息的 DataFrame，如果查询失败则返回空 DataFrame
+    """
+    if engine is None:
+        logger.error("数据库引擎无效，无法查询 ETF List。")
+        return pd.DataFrame()
+    
+    try:
+        # 构建查询语句
+        query = "SELECT * FROM etf_list"
+        
+        # 执行查询
+        df = pd.read_sql(query, engine)
+        
+        logger.info(f"成功从 etf_list 表中查询到 {len(df)} 条 ETF 记录。")
+        return df
+    
+    except SQLAlchemyError as e:
+        logger.error(f"查询 ETF List 表时出错: {e}")
+        return pd.DataFrame()
+    except Exception as e:
+        logger.error(f"查询 ETF List 表时发生未知错误: {e}")
+        return pd.DataFrame()
 
 # --- 测试代码 (可选) ---
 if __name__ == '__main__':
@@ -405,3 +435,5 @@ if __name__ == '__main__':
             logger.error("数据库引擎创建失败，测试中止。")
     else:
         logger.error("配置文件加载失败，测试中止。")
+
+

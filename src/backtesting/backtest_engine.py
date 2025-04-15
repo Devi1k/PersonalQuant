@@ -16,13 +16,12 @@ from datetime import datetime, timedelta
 from pathlib import Path
 import json
 # --- 新增导入 ---
-from ..utils.db_utils import get_db_engine, df_to_sql, load_config, query_etf_history
+from ..utils.db_utils import get_db_engine, df_to_sql, load_config, query_etf_history, query_etf_list
 # --- ---
 
 # 导入自定义模块
 from src.data.data_processor import DataProcessor
-# from src.strategy.trend_strategy import TrendStrategy # TrendStrategy 在 __init__ 中创建，这里似乎不需要导入
-from src.strategy import TrendStrategy # 假设 TrendStrategy 在 strategy/__init__.py 或 strategy/trend_strategy.py 中
+from src.strategy import FusionStrategy
 
 # 设置日志
 logger = logging.getLogger(__name__)
@@ -58,7 +57,7 @@ class BacktestEngine:
         self.engine = get_db_engine(self.config_db)
         
         # 策略
-        self.strategy = TrendStrategy(self.config)
+        self.strategy = FusionStrategy(self.config)
         
         # 回测结果
         self.results = {
@@ -486,9 +485,9 @@ class BacktestEngine:
             plt.show()
             logger.info("回测结果图表已显示")
     
-    def save_results(self, symbol, save_dir='results/backtest', save_to_db=False):
+    def save_results(self, symbol, save_dir='results/backtest'):
         """
-        保存回测结果到文件和数据库
+        保存回测结果到本地文件
 
         Parameters
         ----------
@@ -496,8 +495,6 @@ class BacktestEngine:
             交易品种代码
         save_dir : str, default 'results/backtest'
             文件结果保存目录
-        save_to_db : bool, default True
-            是否保存到数据库
         """
         if self.results['equity_curve'] is None:
             logger.warning("无法保存结果：回测结果为空")
@@ -509,76 +506,27 @@ class BacktestEngine:
         # 构建文件名
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
         base_name = f"{symbol}_{self.start_date.replace('-', '')}_{self.end_date.replace('-', '')}_{timestamp}"
-        backtest_id = base_name # 使用 base_name 作为 backtest_id
 
-        # --- 保存到数据库 ---
-        if save_to_db:
-            config = load_config() # 加载配置以获取数据库信息
-            engine = get_db_engine(config)
-            if engine:
-                logger.info(f"尝试将回测结果 ({backtest_id}) 写入数据库...")
-                # 1. 保存权益曲线到数据库
-                try:
-                    equity_df = self.results['equity_curve'].copy()
-                    equity_df['backtest_id'] = backtest_id
-                    # 选择需要的列，确保与表结构匹配 (假设表名为 backtest_equity_curve)
-                    equity_cols = ['backtest_id', 'date', 'market_value', 'drawdown', 'daily_return']
-                    equity_cols_present = [col for col in equity_cols if col in equity_df.columns]
-                    equity_df_to_save = equity_df[equity_cols_present]
-                    # 写入数据库
-                    success_equity = df_to_sql(equity_df_to_save, 'backtest_equity_curve', engine, if_exists='append', index=False)
-                    if success_equity:
-                        logger.info(f"权益曲线数据 ({backtest_id}) 已写入数据库表 backtest_equity_curve")
-                    else:
-                        logger.error(f"权益曲线数据 ({backtest_id}) 写入数据库失败")
-                except Exception as e:
-                    logger.error(f"保存权益曲线到数据库时出错: {e}", exc_info=True)
+        # 保存权益曲线
+        equity_curve_file = os.path.join(save_dir, f"{base_name}_equity.csv")
+        self.results['equity_curve'].to_csv(equity_curve_file, index=False)
+        logger.info(f"权益曲线已保存至 {equity_curve_file}")
 
-                # 2. 保存交易记录到数据库
-                try:
-                    trades_df = pd.DataFrame(self.results['trades'])
-                    if not trades_df.empty:
-                        trades_df['backtest_id'] = backtest_id
-                        # 确保列名与表结构匹配 (假设表名为 backtest_trades)
-                        # 可能需要重命名或选择列
-                        trades_cols = ['backtest_id', 'date', 'type', 'price', 'shares', 'cost', 'proceeds', 'commission', 'note']
-                        trades_cols_present = [col for col in trades_cols if col in trades_df.columns]
-                        trades_df_to_save = trades_df[trades_cols_present]
-                        # 写入数据库
-                        success_trades = df_to_sql(trades_df_to_save, 'backtest_trades', engine, if_exists='append', index=False)
-                        if success_trades:
-                            logger.info(f"交易记录 ({backtest_id}) 已写入数据库表 backtest_trades")
-                        else:
-                            logger.error(f"交易记录 ({backtest_id}) 写入数据库失败")
-                    else:
-                        logger.info("没有交易记录需要写入数据库。")
-                except Exception as e:
-                    logger.error(f"保存交易记录到数据库时出错: {e}", exc_info=True)
-            else:
-                logger.error("无法连接数据库，回测结果未保存到数据库。")
-        # --- ---
-
-        # --- (可选) 保留 CSV 文件保存作为备份 ---
-        # # 保存权益曲线
-        # equity_curve_file = os.path.join(save_dir, f"{base_name}_equity.csv")
-        # self.results['equity_curve'].to_csv(equity_curve_file, index=False)
-        # logger.info(f"权益曲线已备份至 {equity_curve_file}")
-        #
-        # # 保存交易记录
-        # trades_file = os.path.join(save_dir, f"{base_name}_trades.csv")
-        # pd.DataFrame(self.results['trades']).to_csv(trades_file, index=False)
-        # logger.info(f"交易记录已备份至 {trades_file}")
-        # --- ---
-        
+        # 保存交易记录
+        trades_file = os.path.join(save_dir, f"{base_name}_trades.csv")
+        pd.DataFrame(self.results['trades']).to_csv(trades_file, index=False)
+        logger.info(f"交易记录已保存至 {trades_file}")
+    
         # 保存性能指标
         performance_file = os.path.join(save_dir, f"{base_name}_performance.json")
         with open(performance_file, 'w', encoding='utf-8') as f:
             json.dump(self.results['performance'], f, indent=4)
-        
+        logger.info(f"性能指标已保存至 {performance_file}")
+    
         # 保存图表
         plot_file = os.path.join(save_dir, f"{base_name}_plot.png")
         self.plot_results(save_path=plot_file)
-        
+    
         logger.info(f"回测结果已保存至 {save_dir} 目录")
 
 
@@ -607,15 +555,14 @@ def run_backtest(config_file, start_date=None, end_date=None):
         if end_date:
             engine.end_date = end_date
         
-        # 加载配置中的ETF列表
-        etf_list_file = engine.config['data_source'].get('etf_list_file', 'data/raw/etf_list.csv')
-        if os.path.exists(etf_list_file):
-            etf_list = pd.read_csv(etf_list_file)
-            symbols = etf_list['symbol'].tolist()
+        # 从数据库获取ETF列表
+        etf_list = query_etf_list(engine.engine)
+        if not etf_list.empty:
+            symbols = etf_list['code'].tolist()
         else:
-            # 如果ETF列表文件不存在，使用默认的ETF
+            # 如果数据库中没有ETF列表，使用默认的ETF
             symbols = ['159915']  # 创业板ETF
-            logger.warning(f"ETF列表文件 {etf_list_file} 不存在，使用默认ETF: {symbols}")
+            logger.warning(f"数据库中ETF列表为空，使用默认ETF: {symbols}")
         
         # 对每个ETF运行回测
         for symbol in symbols:
