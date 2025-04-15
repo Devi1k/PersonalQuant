@@ -207,9 +207,8 @@ def main():
     # 创建目录结构
     create_directories()
     args.start = "2018-01-01"
-    args.end = "2025-04-11"
-    args.mode = "etf_history"
-    args.code = ["sh000001", "sh000300", "sh000905", "sz399001", "sz399006"]
+    args.end = "2025-04-15"
+    args.mode = "fund_flow"
     logger.info(f"启动数据获取脚本，获取模式: {args.mode}")
     try:
         if args.mode == 'all':

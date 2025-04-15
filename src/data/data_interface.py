@@ -288,10 +288,10 @@ class DataInterface:
         df = self.data_fetcher.get_fund_flow(date)
         
         # 处理数据
-        df = self.data_processor.process_industry_fund_flow(df)
+        # df = self.data_processor.process_industry_fund_flow(df)
         
         # 保存处理后的数据
-        self.data_processor.save_processed_data(df, "industry_fund_flow", date)
+        # self.data_processor.save_processed_data(df, "industry_fund_flow", date)
         
         return df
     
