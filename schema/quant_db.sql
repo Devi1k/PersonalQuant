@@ -28,7 +28,7 @@ CREATE TABLE IF NOT EXISTS etf_list (
 -- 创建ETF指标数据表
 CREATE TABLE IF NOT EXISTS etf_indicators (
     id INT NOT NULL AUTO_INCREMENT COMMENT '自增ID',
-    etf_code VARCHAR(6) NOT NULL COMMENT 'ETF代码',
+    etf_code VARCHAR(8) NOT NULL COMMENT 'ETF代码',
     trade_date DATE NOT NULL COMMENT '交易日期',
     open DECIMAL(10, 2) COMMENT '开盘价',
     high DECIMAL(10, 2) COMMENT '最高价',
@@ -64,6 +64,7 @@ CREATE TABLE IF NOT EXISTS etf_indicators (
     atr_14 DECIMAL(10, 4) COMMENT '14日ATR',
     obv BIGINT COMMENT 'OBV指标',
     volume_ma_5 BIGINT COMMENT '成交量5日均线',
+    vwap_20 DECIMAL(10, 2) COMMENT '20日成交量加权平均价格',
     PRIMARY KEY (id, trade_date),
     UNIQUE KEY uk_etf_date (etf_code, trade_date),
     INDEX idx_trade_date (trade_date)

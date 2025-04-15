@@ -199,7 +199,7 @@ class DataProcessor:
         # 从配置中获取EMA通道参数，如果没有则使用默认值
         ema_channel_period = 144
         ema_channel_width = 0.05
-        # TODO: 处理空值
+        
         if config and 'strategy' in config and 'trend' in config['strategy']:
             trend_config = config['strategy']['trend']
             ema_channel_period = trend_config.get('ema_channel_period', 144)

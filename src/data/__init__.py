@@ -41,7 +41,7 @@ def get_data_interface(raw_data_dir="data/raw", processed_data_dir="data/process
     return _data_interface
 
 # 导出核心函数，方便直接调用
-def get_etf_history(code, start_date=None, end_date=None, fields=None, adjust="qfq"):
+def get_etf_history(code, start_date=None, end_date=None, fields=None, adjust="qfq", force_update=False):
     """
     获取ETF历史行情数据
     

@@ -185,6 +185,8 @@ def upsert_df_to_sql(df: pd.DataFrame, table_name: str, engine, unique_columns: 
     # 这解决了pymysql.err.ProgrammingError: nan can not be used with MySQL的问题
     import numpy as np
     df_copy = df_copy.replace([np.inf, -np.inf], np.nan)
+    # 确保所有 NaN 值被转换为 None，先转换为 object 类型
+    df_copy = df_copy.astype(object)
     df_copy = df_copy.where(pd.notnull(df_copy), None)
 
     # --- 构建 SQL 语句 ---

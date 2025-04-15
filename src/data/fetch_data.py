@@ -94,8 +94,25 @@ def fetch_etf_list():
         for i, (_, row) in enumerate(etf_list.head(10).iterrows()):
             logger.info(f"{i+1}. {row['code']} - {row['name']}")
 
-def fetch_etf_history(code, start_date=None, end_date=None, force_update=False):
-    """获取ETF历史数据"""
+def fetch_etf_history(code, start_date=None, end_date=None, fields=None, adjust="qfq", force_update=False):
+    """
+    获取ETF历史数据
+    
+    Parameters
+    ----------
+    code : str
+        ETF代码，如 "159915"
+    start_date : str, default None
+        开始日期，格式 "YYYY-MM-DD"，默认为一年前
+    end_date : str, default None
+        结束日期，格式 "YYYY-MM-DD"，默认为今天
+    fields : list, default None
+        需要的字段列表，默认为全部字段
+    adjust : str, default "qfq"
+        复权方式，"qfq"为前复权，"hfq"为后复权，None为不复权
+    force_update : bool, default False
+        是否强制更新数据
+    """
     if not code:
         logger.error("未指定ETF代码")
         return
@@ -109,7 +126,7 @@ def fetch_etf_history(code, start_date=None, end_date=None, force_update=False):
     logger.info(f"开始获取ETF {code} 从 {start_date} 到 {end_date} 的历史数据...")
     
     # 获取ETF历史数据
-    df = get_etf_history(code, start_date, end_date, force_update=force_update)
+    df = get_etf_history(code, start_date, end_date, fields, adjust, force_update=force_update)
     
     if df.empty:
         logger.warning(f"未获取到ETF {code} 的历史数据")
@@ -120,21 +137,16 @@ def fetch_etf_history(code, start_date=None, end_date=None, force_update=False):
     # 打印最近5条记录
     if len(df) > 0:
         logger.info("最近5条记录:")
-        recent_data = df.sort_values("date", ascending=False).head(5)
+        recent_data = df.sort_values("trade_date", ascending=False).head(5)
         for i, (_, row) in enumerate(recent_data.iterrows()):
-            logger.info(f"{i+1}. {row['date'].strftime('%Y-%m-%d')} - 开盘: {row['open']:.2f}, 最高: {row['high']:.2f}, 最低: {row['low']:.2f}, 收盘: {row['close']:.2f}, 成交量: {row['volume']}")
+            logger.info(f"{i+1}. {row['trade_date'].strftime('%Y-%m-%d')} - 开盘: {row['open']:.2f}, 最高: {row['high']:.2f}, 最低: {row['low']:.2f}, 收盘: {row['close']:.2f}, 成交量: {row['volume']}")
     
-    # 获取技术指标
-    macd = get_technical_indicators(code, "macd", start_date=start_date, end_date=end_date)
-    if not macd.empty:
-        logger.info(f"成功获取ETF {code} MACD指标，共 {len(macd)} 条记录")
-        
-        # 打印最近3条记录
-        if len(macd) > 0:
-            logger.info("最近3条MACD记录:")
-            recent_macd = macd.sort_values("date", ascending=False).head(3)
-            for i, (_, row) in enumerate(recent_macd.iterrows()):
-                logger.info(f"{i+1}. {row['date'].strftime('%Y-%m-%d')} - MACD: {row['macd']:.4f}, Signal: {row['macd_signal']:.4f}, Hist: {row['macd_hist']:.4f}")
+    # 打印MACD指标信息
+    if 'macd' in df.columns:
+        logger.info("最近3条MACD记录:")
+        recent_macd = df.sort_values("trade_date", ascending=False).head(3)
+        for i, (_, row) in enumerate(recent_macd.iterrows()):
+            logger.info(f"{i+1}. {row['trade_date'].strftime('%Y-%m-%d')} - MACD: {row['macd']:.4f}, Signal: {row['macd_signal']:.4f}, Hist: {row['macd_hist']:.4f}")
 
 def fetch_fund_flow(date=None, force_update=False):
     """获取行业资金流向数据"""
@@ -196,7 +208,8 @@ def main():
     create_directories()
     args.start = "2018-01-01"
     args.end = "2025-04-11"
-    args.mode = "all"
+    args.mode = "etf_history"
+    args.code = ["sh000001", "sh000300", "sh000905", "sz399001", "sz399006"]
     logger.info(f"启动数据获取脚本，获取模式: {args.mode}")
     try:
         if args.mode == 'all':
@@ -221,8 +234,8 @@ def main():
             if not args.code:
                 logger.error("获取ETF历史数据需要指定ETF代码")
                 return 1
-                
-            fetch_etf_history(args.code, args.start, args.end, args.force)
+            for code in args.code:
+                fetch_etf_history(code=code, start_date=args.start, end_date=args.end, force_update=args.force)
             
         elif args.mode == 'fund_flow':
             # 获取行业资金流向数据
