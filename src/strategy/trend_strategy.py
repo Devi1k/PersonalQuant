@@ -40,9 +40,9 @@ class TrendStrategy:
         self.bollinger_period = trend_config.get('bollinger_period', 20)
         self.bollinger_std_dev = trend_config.get('bollinger_std_dev', 2.0)
         
-        # MACD参数
-        self.macd_short_period = trend_config.get('macd_short_period', 21)
-        self.macd_long_period = trend_config.get('macd_long_period', 200)
+        # EMA参数
+        self.ema_short_period = trend_config.get('ema_short_period', 21)
+        self.ema_long_period = trend_config.get('ema_long_period', 200)
         
         # 多维周期参数
         self.timeframes = trend_config.get('timeframes', [5, 15, 60])
@@ -62,7 +62,7 @@ class TrendStrategy:
         # 信号组合权重
         default_weights = {
             'bb_signal': 2.0,            # 布林带信号权重提高（趋势跟踪核心指标）
-            'macd_signal': 2.5,          # MACD信号权重提高（趋势跟踪核心指标）
+            'ema_signal': 2.5,          # EMA信号权重提高（趋势跟踪核心指标）
             'multi_timeframe_signal': 3.0, # 多周期信号权重最高（优化入场点）
             'ema_reversal_signal': 1.5,   # 反转信号权重适中（风险对冲）
             'volume_price_signal': 1.0    # 成交量确认信号
@@ -71,7 +71,7 @@ class TrendStrategy:
         
         logger.info(f"趋势策略初始化完成，参数：快速MA={self.fast_ma}, 慢速MA={self.slow_ma}, "
                    f"布林带周期={self.bollinger_period}, 布林带标准差={self.bollinger_std_dev}, "
-                   f"MACD短期={self.macd_short_period}, MACD长期={self.macd_long_period}, "
+                   f"EMA短期={self.ema_short_period}, EMA长期={self.ema_long_period}, "
                    f"EMA通道周期={self.ema_channel_period}, 成交量阈值={self.volume_threshold}")
     
     def bollinger_bands_breakout(self, df):
@@ -93,7 +93,7 @@ class TrendStrategy:
             return df
         
         # 确保必要的列存在
-        required_cols = ["date", "close", "bb_upper", "bb_lower", "bb_middle"]
+        required_cols = ["date", "close", "bb_upper", "bb_lower", "bb_middle", "ema_21", "ema_200"]
         missing_cols = [col for col in required_cols if col not in df.columns]
         if missing_cols:
             logger.error(f"布林带突破策略所需的列缺失: {missing_cols}")
@@ -105,22 +105,16 @@ class TrendStrategy:
         result_df = df.copy()
         
         # 计算布林带突破信号
-        # 1. 上轨突破: 收盘价从下方突破上轨
-        # 2. 下轨突破: 收盘价从上方突破下轨
+        # 1. 上轨突破: 收盘价高于上轨
+        # 2. 下轨突破: 收盘价低于下轨
         
         # 上轨突破信号
-        result_df['bb_upper_breakout'] = (
-            (result_df['close'] > result_df['bb_upper']) & 
-            (result_df['close'].shift(1) <= result_df['bb_upper'].shift(1))
-        )
+        result_df['bb_upper_breakout'] = (result_df['close'] > result_df['bb_upper'])
         
         # 下轨突破信号
-        result_df['bb_lower_breakout'] = (
-            (result_df['close'] < result_df['bb_lower']) & 
-            (result_df['close'].shift(1) >= result_df['bb_lower'].shift(1))
-        )
+        result_df['bb_lower_breakout'] = (result_df['close'] < result_df['bb_lower'])
         
-        # 中轨突破信号（从下向上或从上向下）
+        # 中轨突破信号（从下向上或从上向下）- 保留用于参考
         result_df['bb_middle_up_cross'] = (
             (result_df['close'] > result_df['bb_middle']) & 
             (result_df['close'].shift(1) <= result_df['bb_middle'].shift(1))
@@ -131,29 +125,25 @@ class TrendStrategy:
             (result_df['close'].shift(1) >= result_df['bb_middle'].shift(1))
         )
         
+        # 判断趋势方向（使用EMA指标）
+        result_df['uptrend'] = (result_df['ema_21'] > result_df['ema_200'])
+        
         # 综合信号
-        # 1 = 买入信号（下轨突破后回升穿过中轨）
-        # -1 = 卖出信号（上轨突破后回落穿过中轨）
+        # 1 = 买入信号（收盘价 > 上轨 且处于上升趋势）
+        # -1 = 卖出信号（收盘价 < 下轨 且处于下降趋势）
         # 0 = 无信号
         
         # 初始化信号列
         result_df['bb_signal'] = 0
         
-        # 买入信号：之前有下轨突破，现在向上穿过中轨
-        for i in range(1, len(result_df)):
-            # 查找过去10个周期内是否有下轨突破
-            lookback = min(10, i)
-            if (result_df['bb_lower_breakout'].iloc[i-lookback:i].any() and 
-                result_df['bb_middle_up_cross'].iloc[i]):
-                result_df.loc[result_df.index[i], 'bb_signal'] = 1
+        # 买入信号：收盘价高于上轨且处于上升趋势
+        result_df.loc[result_df['bb_upper_breakout'] & result_df['uptrend'], 'bb_signal'] = 1
         
-        # 卖出信号：之前有上轨突破，现在向下穿过中轨
-        for i in range(1, len(result_df)):
-            # 查找过去10个周期内是否有上轨突破
-            lookback = min(10, i)
-            if (result_df['bb_upper_breakout'].iloc[i-lookback:i].any() and 
-                result_df['bb_middle_down_cross'].iloc[i]):
-                result_df.loc[result_df.index[i], 'bb_signal'] = -1
+        # 卖出信号：收盘价低于下轨且处于下降趋势
+        result_df.loc[result_df['bb_lower_breakout'] & (~result_df['uptrend']), 'bb_signal'] = -1
+        
+        # 删除临时列
+        result_df.drop(['uptrend'], axis=1, inplace=True)
         
         # 统计信号数量
         buy_signals = (result_df['bb_signal'] == 1).sum()
@@ -162,9 +152,9 @@ class TrendStrategy:
         
         return result_df
     
-    def macd_convergence_divergence(self, df):
+    def ema_crossover_signal(self, df):
         """
-        MACD长短周期移动平均线收敛与发散（1个月期与200日EMA）
+        EMA长短周期移动平均线交叉信号（21周期与200周期EMA）
         
         Parameters
         ----------
@@ -174,7 +164,7 @@ class TrendStrategy:
         Returns
         -------
         pandas.DataFrame
-            添加了MACD收敛发散信号的数据框
+            添加了EMA交叉信号的数据框
         """
         if df.empty:
             logger.warning("输入的数据为空")
@@ -184,10 +174,10 @@ class TrendStrategy:
         required_cols = ["date", "close", "ema_21", "ema_200", "ema_21_200_diff"]
         missing_cols = [col for col in required_cols if col not in df.columns]
         if missing_cols:
-            logger.error(f"MACD收敛发散策略所需的列缺失: {missing_cols}")
+            logger.error(f"EMA交叉策略所需的列缺失: {missing_cols}")
             return df
         
-        logger.info("开始计算MACD长短周期收敛发散信号")
+        logger.info("开始计算EMA长短周期交叉信号")
         
         # 复制数据，避免修改原始数据
         result_df = df.copy()
@@ -195,7 +185,7 @@ class TrendStrategy:
         # 计算差值的变化率
         result_df['ema_diff_change'] = result_df['ema_21_200_diff'].diff()
         
-        # 计算收敛发散信号
+        # 计算交叉信号
         # 1. 金叉：短期EMA从下方穿过长期EMA
         # 2. 死叉：短期EMA从上方穿过长期EMA
         
@@ -233,22 +223,22 @@ class TrendStrategy:
         # 0 = 无信号
         
         # 初始化信号列
-        result_df['macd_signal'] = 0
+        result_df['ema_signal'] = 0
         
         # 买入信号：金叉或多头发散（短期EMA在长期EMA上方且差距扩大）
-        result_df.loc[result_df['ema_golden_cross'], 'macd_signal'] = 1
+        result_df.loc[result_df['ema_golden_cross'], 'ema_signal'] = 1
         result_df.loc[(result_df['ema_21'] > result_df['ema_200']) & 
-                      (result_df['ema_diverging']), 'macd_signal'] = 1
+                      (result_df['ema_diverging']), 'ema_signal'] = 1
         
         # 卖出信号：死叉或空头发散（短期EMA在长期EMA下方且差距扩大）
-        result_df.loc[result_df['ema_death_cross'], 'macd_signal'] = -1
+        result_df.loc[result_df['ema_death_cross'], 'ema_signal'] = -1
         result_df.loc[(result_df['ema_21'] < result_df['ema_200']) & 
-                      (result_df['ema_diverging']), 'macd_signal'] = -1
+                      (result_df['ema_diverging']), 'ema_signal'] = -1
         
         # 统计信号数量
-        buy_signals = (result_df['macd_signal'] == 1).sum()
-        sell_signals = (result_df['macd_signal'] == -1).sum()
-        logger.info(f"MACD收敛发散信号计算完成，买入信号: {buy_signals}个, 卖出信号: {sell_signals}个")
+        buy_signals = (result_df['ema_signal'] == 1).sum()
+        sell_signals = (result_df['ema_signal'] == -1).sum()
+        logger.info(f"EMA交叉信号计算完成，买入信号: {buy_signals}个, 卖出信号: {sell_signals}个")
         
         return result_df
     
@@ -572,7 +562,7 @@ class TrendStrategy:
         组合多个策略信号，生成最终交易信号
         
         根据策略类型分配仓位：
-        - 趋势跟踪为主（60-80%仓位）：布林带和MACD信号
+        - 趋势跟踪为主（60-80%仓位）：布林带和EMA信号
         - 多周期策略优化入场点（20-30%）：多维周期组合策略
         - 反转策略作为风险对冲（5-10%）：EMA通道反转策略
         
@@ -592,7 +582,7 @@ class TrendStrategy:
         
         # 确保必要的信号列存在
         signal_cols = [
-            'bb_signal', 'macd_signal', 'multi_timeframe_signal',
+            'bb_signal', 'ema_signal', 'multi_timeframe_signal',
             'ema_reversal_signal', 'volume_price_signal'
         ]
         
@@ -608,7 +598,7 @@ class TrendStrategy:
         result_df = df.copy()
         
         # 按照策略类型分组
-        trend_signals = ['bb_signal', 'macd_signal']
+        trend_signals = ['bb_signal', 'ema_signal']
         multi_tf_signals = ['multi_timeframe_signal']
         reversal_signals = ['ema_reversal_signal']
         confirmation_signals = ['volume_price_signal']

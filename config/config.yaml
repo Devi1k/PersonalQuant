@@ -34,13 +34,13 @@ strategy:
     bollinger_std_dev: 2.0
     ema_channel_period: 144
     ema_channel_width: 0.05
+    ema_long_period: 200
+    ema_short_period: 21
     fast_ma: 20
-    macd_long_period: 200
-    macd_short_period: 21
     signal_weights:
       bb_signal: 1.0
       ema_reversal_signal: 1.2
-      macd_signal: 1.5
+      ema_signal: 1.5
       multi_timeframe_signal: 2.0
       volume_price_signal: 0.8
     slow_ma: 60

@@ -91,6 +91,9 @@ class FusionStrategyBT(bt.Strategy):
         ('risk_pct', 0.02),  # 单笔风险比例
         ('max_positions', 5),  # 最大持仓数量
         ('use_custom_signals', True),  # 是否使用自定义信号
+        ('atr_stop_loss_multiplier', 1.5),  # ATR止损乘数
+        ('trailing_stop', False),  # 是否启用跟踪止损
+        ('trailing_percent', 0.5),  # 跟踪止损百分比(0-1)，表示ATR的比例
     )
     
     def __init__(self):
@@ -151,14 +154,23 @@ class FusionStrategyBT(bt.Strategy):
         if order.status in [order.Completed]:
             if order.isbuy():
                 self.log(f'买入执行: 价格={order.executed.price:.2f}, 成本={order.executed.value:.2f}, 手续费={order.executed.comm:.2f}')
-                # 记录买入价格
+                # 记录买入价格和止损价格
+                data = order.data
+                atr_value = data.atr[0] if hasattr(data.lines, 'atr') and data.atr[0] > 0 else self.atr[0] if hasattr(self, 'atr') else 0
+                
+                # 计算止损价格
+                stop_loss_price = order.executed.price - (atr_value * self.params.atr_stop_loss_multiplier)
+                
                 self.positions_info[order.data._name] = {
                     'price': order.executed.price,
                     'size': order.executed.size,
                     'value': order.executed.value,
                     'commission': order.executed.comm,
-                    'time': self.data.datetime.datetime(0)
+                    'time': self.data.datetime.datetime(0),
+                    'stop_loss': stop_loss_price,  # 记录初始止损价格
+                    'highest_price': order.executed.price,  # 记录最高价格，用于跟踪止损
                 }
+                self.log(f'设置止损价格: {stop_loss_price:.2f}')
             else:
                 self.log(f'卖出执行: 价格={order.executed.price:.2f}, 成本={order.executed.value:.2f}, 手续费={order.executed.comm:.2f}')
                 # 计算收益
@@ -196,29 +208,61 @@ class FusionStrategyBT(bt.Strategy):
             # 获取当前持仓
             position = self.getposition(data)
             
-            # 检查止损条件 - 添加ATR止损逻辑
+            # 处理多头持仓
             if position and position.size > 0:
-                # 检查是否有long_stop_loss列
-                if hasattr(data.lines, 'long_stop_loss') and data.long_stop_loss[0] > 0:
-                    current_price = data.close[0]
+                current_price = data.close[0]
+                
+                # 更新持仓信息中的最高价格（用于跟踪止损）
+                if ticker in self.positions_info:
+                    if current_price > self.positions_info[ticker]['highest_price']:
+                        self.positions_info[ticker]['highest_price'] = current_price
+                    
+                    # 如果启用跟踪止损，动态调整止损价格
+                    if self.params.trailing_stop:
+                        initial_stop = self.positions_info[ticker]['stop_loss']
+                        entry_price = self.positions_info[ticker]['price']
+                        highest_price = self.positions_info[ticker]['highest_price']
+                        
+                        # 计算潜在的新止损价格（基于最高价格）
+                        atr_value = data.atr[0] if hasattr(data.lines, 'atr') and data.atr[0] > 0 else self.atr[0] if hasattr(self, 'atr') else 0
+                        trailing_distance = atr_value * self.params.atr_stop_loss_multiplier * self.params.trailing_percent
+                        potential_stop = highest_price - trailing_distance
+                        
+                        # 只有当新止损价格高于当前止损价格时才更新
+                        if potential_stop > self.positions_info[ticker]['stop_loss']:
+                            self.positions_info[ticker]['stop_loss'] = potential_stop
+                            self.log(f'调整止损价格: {ticker}, 新止损价={potential_stop:.2f}')
+                    
+                    # 检查是否触发止损
+                    stop_loss_price = self.positions_info[ticker]['stop_loss']
+                    
+                    # 如果价格低于止损价，执行止损
+                    if current_price <= stop_loss_price:
+                        self.log(f'止损触发: {ticker}, 当前价格={current_price:.2f}, 止损价={stop_loss_price:.2f}')
+                        self.orders[ticker] = self.sell(data=data, size=position.size)
+                        continue  # 已经执行了止损，跳过后续信号检查
+                
+                # 如果没有持仓信息但有long_stop_loss列，使用数据源中的止损价格
+                elif hasattr(data.lines, 'long_stop_loss') and data.long_stop_loss[0] > 0:
                     stop_loss_price = data.long_stop_loss[0]
                     
                     # 如果价格低于止损价，执行止损
                     if current_price <= stop_loss_price:
-                        self.log(f'ATR止损触发: {ticker}, 当前价格={current_price:.2f}, 止损价={stop_loss_price:.2f}')
+                        self.log(f'数据源止损触发: {ticker}, 当前价格={current_price:.2f}, 止损价={stop_loss_price:.2f}')
                         self.orders[ticker] = self.sell(data=data, size=position.size)
                         continue  # 已经执行了止损，跳过后续信号检查
             
-            # 检查做空持仓的止损条件
+            # 处理空头持仓的止损条件
             elif position and position.size < 0:
-                # 检查是否有short_stop_loss列
+                # 空头止损逻辑类似，但方向相反
+                # 这里简化处理，只使用数据源中的止损价格
                 if hasattr(data.lines, 'short_stop_loss') and data.short_stop_loss[0] > 0:
                     current_price = data.close[0]
                     stop_loss_price = data.short_stop_loss[0]
                     
                     # 如果价格高于止损价，执行止损
                     if current_price >= stop_loss_price:
-                        self.log(f'ATR止损触发: {ticker}, 当前价格={current_price:.2f}, 止损价={stop_loss_price:.2f}')
+                        self.log(f'空头止损触发: {ticker}, 当前价格={current_price:.2f}, 止损价={stop_loss_price:.2f}')
                         self.orders[ticker] = self.buy(data=data, size=abs(position.size))
                         continue  # 已经执行了止损，跳过后续信号检查
             
@@ -518,7 +562,10 @@ class BTBacktestEngine:
             'confirmation_multiplier': self.strategy_config.get('confirmation_multiplier', 1.5),
             'risk_pct': self.strategy_config.get('risk_pct', 0.02),
             'max_positions': self.strategy_config.get('max_positions', 5),
-            'use_custom_signals': self.strategy_config.get('use_custom_signals', True)
+            'use_custom_signals': self.strategy_config.get('use_custom_signals', True),
+            'atr_stop_loss_multiplier': self.strategy_config.get('atr_stop_loss_multiplier', 1.5),
+            'trailing_stop': self.strategy_config.get('trailing_stop', False),
+            'trailing_percent': self.strategy_config.get('trailing_percent', 0.5)
         }
         
         self.cerebro.addstrategy(FusionStrategyBT, **strategy_params)
