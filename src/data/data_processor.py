@@ -650,6 +650,258 @@ class DataProcessor:
 
         return db_saved # 返回数据库保存是否成功
 
+    def process_minute_kline(self, df, fill_missing=True, detect_outliers=True):
+        """
+        处理ETF分钟级别K线数据
+        
+        Parameters
+        ----------
+        df : pandas.DataFrame
+            ETF分钟级别K线数据
+        fill_missing : bool, default True
+            是否填充缺失值
+        detect_outliers : bool, default True
+            是否检测异常值
+            
+        Returns
+        -------
+        pandas.DataFrame
+            处理后的ETF分钟级别K线数据
+        """
+        if df.empty:
+            logger.warning("输入的ETF分钟级别K线数据为空")
+            return df
+        
+        logger.info(f"开始处理ETF分钟级别K线数据，共 {len(df)} 条记录")
+        
+        # 复制数据，避免修改原始数据
+        processed_df = df.copy()
+        
+        # 确保日期和时间列为正确的类型
+        if "trade_date" in processed_df.columns:
+            processed_df["trade_date"] = pd.to_datetime(processed_df["trade_date"]).dt.date
+        
+        if "trade_time" in processed_df.columns:
+            # 确保trade_time是time类型
+            if not pd.api.types.is_time_dtype(processed_df["trade_time"]):
+                processed_df["trade_time"] = pd.to_datetime(processed_df["trade_time"]).dt.time
+        
+        # 填充缺失值
+        if fill_missing:
+            # 对于价格数据，使用前值填充
+            price_cols = ["open", "high", "low", "close"]
+            for col in price_cols:
+                if col in processed_df.columns and processed_df[col].isnull().any():
+                    missing_count = processed_df[col].isnull().sum()
+                    processed_df[col] = processed_df[col].fillna(method="ffill")
+                    logger.info(f"填充 {col} 列的 {missing_count} 个缺失值")
+            
+            # 对于成交量和成交额，使用0填充
+            volume_cols = ["volume", "amount"]
+            for col in volume_cols:
+                if col in processed_df.columns and processed_df[col].isnull().any():
+                    missing_count = processed_df[col].isnull().sum()
+                    processed_df[col] = processed_df[col].fillna(0)
+                    logger.info(f"填充 {col} 列的 {missing_count} 个缺失值")
+        
+        # 检测异常值
+        if detect_outliers:
+            # 对于价格数据，使用滚动窗口的3倍标准差检测异常值
+            price_cols = ["open", "high", "low", "close"]
+            window_size = 20  # 使用20个周期的滚动窗口
+            min_obs = 5      # 最少需要5个观测值才能计算
+            
+            # 按ETF代码和周期分组处理
+            if "etf_code" in processed_df.columns and "period" in processed_df.columns:
+                for (etf_code, period), group in processed_df.groupby(["etf_code", "period"]):
+                    for col in price_cols:
+                        if col in group.columns:
+                            # 计算滚动均值和标准差
+                            rolling_mean = group[col].rolling(window=window_size, min_periods=min_obs).mean()
+                            rolling_std = group[col].rolling(window=window_size, min_periods=min_obs).std()
+                            
+                            # 计算上下边界
+                            lower_bound = rolling_mean - 3 * rolling_std
+                            upper_bound = rolling_mean + 3 * rolling_std
+                            
+                            # 检测异常值
+                            outliers_mask = (group[col] < lower_bound) | (group[col] > upper_bound)
+                            outliers = group[outliers_mask]
+                            
+                            if not outliers.empty:
+                                logger.warning(f"ETF {etf_code} 的 {period} 分钟K线中，检测到 {col} 列中有 {len(outliers)} 个异常值")
+                                
+                                # 使用前值替换异常值
+                                for idx in outliers.index:
+                                    if idx > 0:  # 确保有前值可用
+                                        processed_df.loc[idx, col] = processed_df.loc[idx-1, col]
+                                        logger.info(f"替换 {col} 列索引 {idx} 处的异常值")
+        
+        # 确保数据按日期和时间排序
+        if "trade_date" in processed_df.columns and "trade_time" in processed_df.columns:
+            processed_df = processed_df.sort_values(["etf_code", "period", "trade_date", "trade_time"])
+        
+        logger.info(f"ETF分钟级别K线数据处理完成，处理后共 {len(processed_df)} 条记录")
+        
+        return processed_df
+    
+    def calculate_minute_indicators(self, df, config=None):
+        """
+        计算分钟级别技术指标
+        
+        Parameters
+        ----------
+        df : pandas.DataFrame
+            ETF分钟级别K线数据，必须包含OHLCV数据
+        config : dict, default None
+            策略配置参数
+            
+        Returns
+        -------
+        pandas.DataFrame
+            添加了技术指标的分钟级别数据
+        """
+        if df.empty:
+            logger.warning("输入的ETF分钟级别K线数据为空")
+            return df
+        
+        # 确保必要的列存在
+        required_cols = ["etf_code", "trade_date", "trade_time", "period", "open", "high", "low", "close", "volume"]
+        missing_cols = [col for col in required_cols if col not in df.columns]
+        if missing_cols:
+            logger.error(f"计算分钟级别技术指标所需的列缺失: {missing_cols}")
+            return df
+        
+        logger.info(f"开始计算分钟级别技术指标，基于 {len(df)} 条历史数据")
+        
+        # 复制数据，避免修改原始数据
+        result_df = df.copy()
+        
+        # 按ETF代码和周期分组处理
+        indicators_dfs = []
+        
+        for (etf_code, period), group in result_df.groupby(["etf_code", "period"]):
+            # 确保数据按日期和时间排序
+            group = group.sort_values(["trade_date", "trade_time"])
+            
+            # 创建指标DataFrame
+            indicators_df = pd.DataFrame()
+            indicators_df["etf_code"] = group["etf_code"]
+            indicators_df["trade_date"] = group["trade_date"]
+            indicators_df["trade_time"] = group["trade_time"]
+            indicators_df["period"] = group["period"]
+            
+            # 1. 计算移动平均线
+            ma_periods = [5, 10, 20]
+            for ma_period in ma_periods:
+                indicators_df[f"ma_{ma_period}"] = group["close"].rolling(window=ma_period).mean()
+                # 避免前视偏差：只使用前向填充，不使用后向填充
+                indicators_df[f"ma_{ma_period}"] = indicators_df[f"ma_{ma_period}"].fillna(method="ffill")
+                logger.info(f"计算ETF {etf_code} 的 {period} 分钟K线 {ma_period} 周期移动平均线")
+            
+            # 2. 计算指数移动平均线(EMA)
+            ema_periods = [12, 26]
+            for ema_period in ema_periods:
+                indicators_df[f"ema_{ema_period}"] = group["close"].ewm(span=ema_period, adjust=False).mean()
+                # 避免前视偏差：只使用前向填充，不使用后向填充
+                indicators_df[f"ema_{ema_period}"] = indicators_df[f"ema_{ema_period}"].fillna(method="ffill")
+                logger.info(f"计算ETF {etf_code} 的 {period} 分钟K线 {ema_period} 周期指数移动平均线")
+            
+            # 3. 计算MACD
+            # MACD = 12周期EMA - 26周期EMA
+            # 信号线 = MACD的9周期EMA
+            # MACD柱 = MACD - 信号线
+            ema12 = group["close"].ewm(span=12, adjust=False).mean()
+            ema26 = group["close"].ewm(span=26, adjust=False).mean()
+            indicators_df["macd"] = ema12 - ema26
+            indicators_df["macd_signal"] = indicators_df["macd"].ewm(span=9, adjust=False).mean()
+            indicators_df["macd_hist"] = indicators_df["macd"] - indicators_df["macd_signal"]
+            
+            # 填充NaN值
+            macd_cols = ["macd", "macd_signal", "macd_hist"]
+            indicators_df[macd_cols] = indicators_df[macd_cols].fillna(0)
+            logger.info(f"计算ETF {etf_code} 的 {period} 分钟K线MACD指标")
+            
+            # 4. 计算RSI (相对强弱指数)
+            # RSI = 100 - (100 / (1 + RS))
+            # RS = 平均上涨幅度 / 平均下跌幅度
+            delta = group["close"].diff()
+            gain = delta.where(delta > 0, 0)
+            loss = -delta.where(delta < 0, 0)
+            # 使用Wilder's Smoothing计算RSI
+            avg_gain_14 = gain.ewm(com=13, adjust=False).mean()
+            avg_loss_14 = loss.ewm(com=13, adjust=False).mean()
+            
+            # 处理除零情况
+            rs_14 = avg_gain_14 / avg_loss_14.replace(0, np.finfo(float).eps)
+            indicators_df["rsi_14"] = 100 - (100 / (1 + rs_14))
+            # 处理极值情况
+            indicators_df["rsi_14"] = indicators_df["rsi_14"].clip(0, 100).fillna(50)
+            logger.info(f"计算ETF {etf_code} 的 {period} 分钟K线RSI指标")
+            
+            # 5. 计算布林带
+            bollinger_period = 20
+            bollinger_std_dev = 2.0
+            
+            # 检查数据量是否足够计算布林带
+            if len(group) >= bollinger_period:
+                # 中轨 = N周期移动平均线
+                indicators_df["bb_middle"] = group["close"].rolling(window=bollinger_period).mean()
+                # 使用样本标准差(ddof=1)而非总体标准差(ddof=0)
+                bb_std = group["close"].rolling(window=bollinger_period).std(ddof=1)
+                indicators_df["bb_upper"] = indicators_df["bb_middle"] + bollinger_std_dev * bb_std
+                indicators_df["bb_lower"] = indicators_df["bb_middle"] - bollinger_std_dev * bb_std
+                
+                # 改进填充策略
+                # 对于中轨，使用与移动平均线相同的填充策略
+                indicators_df["bb_middle"] = indicators_df["bb_middle"].fillna(method="ffill")
+                indicators_df["bb_upper"] = indicators_df["bb_upper"].fillna(method="ffill")
+                indicators_df["bb_lower"] = indicators_df["bb_lower"].fillna(method="ffill")
+                
+                logger.info(f"计算ETF {etf_code} 的 {period} 分钟K线布林带指标")
+            else:
+                # 数据不足时，使用合理的默认值
+                logger.warning(f"ETF {etf_code} 的 {period} 分钟K线数据量不足以计算布林带指标(需要至少{bollinger_period}个数据点，当前只有{len(group)}个)")
+                
+                # 设置默认值
+                mean_price = group["close"].mean()
+                std_price = group["close"].std() if len(group) > 1 else mean_price * 0.02
+                
+                indicators_df["bb_middle"] = mean_price
+                indicators_df["bb_upper"] = mean_price + bollinger_std_dev * std_price
+                indicators_df["bb_lower"] = mean_price - bollinger_std_dev * std_price
+            
+            # 6. 计算成交量5周期均线
+            indicators_df["volume_ma_5"] = group["volume"].rolling(window=5).mean().fillna(method="ffill")
+            logger.info(f"计算ETF {etf_code} 的 {period} 分钟K线成交量5周期均线")
+            
+            # 将计算的指标添加到结果列表
+            indicators_dfs.append(indicators_df)
+        
+        # 合并所有ETF和周期的指标数据
+        if indicators_dfs:
+            all_indicators_df = pd.concat(indicators_dfs, ignore_index=True)
+            logger.info(f"分钟级别技术指标计算完成，共 {len(all_indicators_df)} 条记录")
+            
+            # 写入数据库
+            if self.engine:
+                success = upsert_df_to_sql(
+                    all_indicators_df,
+                    "minute_indicators",
+                    self.engine,
+                    unique_columns=["etf_code", "trade_date", "trade_time", "period"],
+                )
+                
+                if success:
+                    logger.info(f"分钟级别技术指标数据已成功写入数据库 minute_indicators，共 {len(all_indicators_df)} 条记录")
+                else:
+                    logger.error("分钟级别技术指标数据写入数据库失败。")
+            
+            return all_indicators_df
+        else:
+            logger.warning("没有计算出任何分钟级别技术指标")
+            return pd.DataFrame()
+
 
 # 测试代码
 if __name__ == "__main__":

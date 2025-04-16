@@ -52,6 +52,8 @@ class DataInterface:
         self._industry_etfs_cache = None
         self._etf_history_cache = {}
         self._index_history_cache = {}
+        self._minute_kline_cache = {}
+        self._minute_indicators_cache = {}
 
         # --- 初始化数据库引擎 ---
         self.config = load_config()
@@ -444,6 +446,149 @@ class DataInterface:
         
         # 筛选列
         result = df[["date"] + indicator_cols]
+        
+        return result
+    
+    def get_etf_minute_kline(self, code, period=5, start_date=None, end_date=None, 
+                             use_cache=True, force_update=False, with_indicators=True):
+        """
+        获取ETF分钟级别K线数据并计算技术指标
+        
+        Parameters
+        ----------
+        code : str
+            ETF代码，例如 "sh510050"
+        period : int, default 5
+            K线周期，支持 5（5分钟）、15（15分钟）、60（60分钟）
+        start_date : str, default None
+            开始日期，格式为 "YYYY-MM-DD"，默认为当前日期前7天
+        end_date : str, default None
+            结束日期，格式为 "YYYY-MM-DD"，默认为当前日期
+        use_cache : bool, default True
+            是否使用缓存
+        force_update : bool, default False
+            是否强制更新数据
+        with_indicators : bool, default True
+            是否计算技术指标
+            
+        Returns
+        -------
+        tuple
+            (分钟K线数据DataFrame, 技术指标DataFrame)
+        """
+        # 设置默认日期
+        if start_date is None:
+            start_date = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
+        if end_date is None:
+            end_date = datetime.now().strftime("%Y-%m-%d")
+        
+        # 缓存键
+        cache_key = f"{code}_{period}_{start_date}_{end_date}"
+        
+        # 创建缓存字典（如果不存在）
+        if not hasattr(self, '_minute_kline_cache'):
+            self._minute_kline_cache = {}
+        if not hasattr(self, '_minute_indicators_cache'):
+            self._minute_indicators_cache = {}
+            
+        # 如果使用缓存且缓存存在且不强制更新
+        if use_cache and cache_key in self._minute_kline_cache and not force_update:
+            logger.info(f"使用缓存的ETF {code} 的 {period} 分钟K线数据")
+            kline_df = self._minute_kline_cache[cache_key]
+            
+            if with_indicators and cache_key in self._minute_indicators_cache:
+                indicators_df = self._minute_indicators_cache[cache_key]
+                return kline_df, indicators_df
+            elif not with_indicators:
+                return kline_df, None
+        
+        # 获取最新数据
+        logger.info(f"从AKShare获取ETF {code} 的 {period} 分钟K线数据...")
+        kline_df = self.data_fetcher.get_etf_minute_kline(
+            code=code,
+            period=period,
+            start_date=start_date,
+            end_date=end_date
+        )
+        
+        if kline_df.empty:
+            logger.warning(f"未能获取到ETF {code} 的 {period} 分钟K线数据")
+            return pd.DataFrame(), pd.DataFrame()
+        
+        # 处理数据
+        logger.info(f"处理ETF {code} 的 {period} 分钟K线数据...")
+        processed_kline_df = self.data_processor.process_minute_kline(kline_df)
+        
+        # 更新K线数据缓存
+        self._minute_kline_cache[cache_key] = processed_kline_df
+        
+        # 计算技术指标
+        indicators_df = None
+        if with_indicators:
+            logger.info(f"计算ETF {code} 的 {period} 分钟K线技术指标...")
+            indicators_df = self.data_processor.calculate_minute_indicators(processed_kline_df)
+            
+            # 更新指标数据缓存
+            self._minute_indicators_cache[cache_key] = indicators_df
+        
+        return processed_kline_df, indicators_df
+    
+    def update_minute_data(self, etf_codes, periods=None, start_date=None, end_date=None):
+        """
+        更新分钟级别K线数据和技术指标
+        
+        Parameters
+        ----------
+        etf_codes : list
+            ETF代码列表，例如 ["sh510050", "sh510300"]
+        periods : list, default None
+            K线周期列表，例如 [5, 15, 60]，默认为 [5, 15, 60]
+        start_date : str, default None
+            开始日期，格式为 "YYYY-MM-DD"，默认为当前日期前7天
+        end_date : str, default None
+            结束日期，格式为 "YYYY-MM-DD"，默认为当前日期
+            
+        Returns
+        -------
+        dict
+            更新结果
+        """
+        # 设置默认周期
+        if periods is None:
+            periods = [5, 15, 60]
+            
+        # 设置默认日期
+        if start_date is None:
+            start_date = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
+        if end_date is None:
+            end_date = datetime.now().strftime("%Y-%m-%d")
+            
+        logger.info(f"开始更新ETF分钟级别K线数据，从 {start_date} 到 {end_date}...")
+        
+        result = {
+            "kline_data": 0,
+            "indicators_data": 0
+        }
+        
+        for code in etf_codes:
+            for period in periods:
+                logger.info(f"更新ETF {code} 的 {period} 分钟K线数据...")
+                kline_df, indicators_df = self.get_etf_minute_kline(
+                    code=code,
+                    period=period,
+                    start_date=start_date,
+                    end_date=end_date,
+                    use_cache=False,
+                    force_update=True
+                )
+                
+                if not kline_df.empty:
+                    result["kline_data"] += len(kline_df)
+                    
+                if indicators_df is not None and not indicators_df.empty:
+                    result["indicators_data"] += len(indicators_df)
+        
+        logger.info(f"ETF分钟级别K线数据更新完成，共更新K线数据 {result['kline_data']} 条，技术指标数据 {result['indicators_data']} 条")
         
         return result
     

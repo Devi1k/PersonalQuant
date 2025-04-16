@@ -708,6 +708,160 @@ class AKShareData:
         logger.info("所有数据获取完成")
         return result
 
+    def get_etf_minute_kline(
+        self, code, period=5, start_date=None, end_date=None, save=True
+    ):
+        """
+        获取ETF分钟级别K线数据并写入数据库
+        
+        Parameters
+        ----------
+        code : str
+            ETF代码，例如 "sh510050"
+        period : int
+            K线周期，支持 5（5分钟）、15（15分钟）、60（60分钟）
+        start_date : str, optional
+            开始日期，格式为 "YYYY-MM-DD"，默认为当前日期前7天
+        end_date : str, optional
+            结束日期，格式为 "YYYY-MM-DD"，默认为当前日期
+        save : bool, optional
+            是否保存到数据库，默认为 True
+            
+        Returns
+        -------
+        pandas.DataFrame
+            包含分钟级别K线数据的DataFrame
+        """
+        if not self.engine and save:
+            logger.error(f"数据库未连接，无法保存ETF {code} 的分钟K线数据。")
+            return pd.DataFrame()
+            
+        # 验证周期参数
+        valid_periods = [5, 15, 60]
+        if period not in valid_periods:
+            logger.error(f"不支持的K线周期: {period}，支持的周期为: {valid_periods}")
+            return pd.DataFrame()
+            
+        # 设置默认日期
+        if start_date is None:
+            start_date_obj = (datetime.now() - timedelta(days=7)).date()
+            start_date = start_date_obj.strftime("%Y-%m-%d")
+        else:
+            start_date_obj = pd.to_datetime(start_date).date()
+            
+        if end_date is None:
+            end_date_obj = datetime.now().date()
+            end_date = end_date_obj.strftime("%Y-%m-%d")
+        else:
+            end_date_obj = pd.to_datetime(end_date).date()
+            
+        # AKShare接口需要的日期格式转换
+        start_date_req = start_date.replace("-", "")
+        end_date_req = end_date.replace("-", "")
+        
+        logger.info(
+            f"开始获取ETF {code} 从 {start_date} 到 {end_date} 的 {period} 分钟K线数据..."
+        )
+        
+        try:
+            # 使用AKShare获取ETF分钟K线数据
+            # 移除前缀，AKShare接口通常不需要sh/sz前缀
+            if code.startswith("sh") or code.startswith("sz"):
+                code_no_prefix = code[2:]
+            else:
+                code_no_prefix = code
+                
+            # 调用AKShare接口获取分钟K线数据
+            # 根据period参数选择相应的周期
+            period_map = {5: "5", 15: "15", 60: "60"}
+            period_str = period_map.get(period, "5")
+            
+            df = ak.stock_zh_a_hist_min_em(
+                symbol=code_no_prefix,
+                period=period_str,
+                start_date=start_date_req,
+                end_date=end_date_req,
+            )
+            
+            if df.empty:
+                logger.warning(f"未能获取到ETF {code} 的 {period} 分钟K线数据。")
+                return pd.DataFrame()
+                
+            # 数据库列名映射
+            column_mapping = {
+                "时间": "datetime",  # 临时列名，后面会拆分为trade_date和trade_time
+                "开盘": "open",
+                "最高": "high",
+                "最低": "low",
+                "收盘": "close",
+                "成交量": "volume",
+                "成交额": "amount",
+            }
+            df = df.rename(columns=column_mapping)
+            
+            # 将datetime列拆分为trade_date和trade_time
+            df["datetime"] = pd.to_datetime(df["datetime"])
+            df["trade_date"] = df["datetime"].dt.date
+            df["trade_time"] = df["datetime"].dt.time
+            
+            # 添加ETF代码和周期列
+            df["etf_code"] = code_no_prefix
+            df["period"] = period
+            
+            # 选择数据库表需要的列
+            db_columns = [
+                "etf_code",
+                "trade_date",
+                "trade_time",
+                "period",
+                "open",
+                "high",
+                "low",
+                "close",
+                "volume",
+                "amount",
+            ]
+            
+            # 过滤掉DataFrame中不存在的列
+            db_columns_present = [col for col in db_columns if col in df.columns]
+            df_to_save = df[db_columns_present].copy()
+            
+            # 转换数据类型
+            for col in ["open", "high", "low", "close", "amount"]:
+                if col in df_to_save.columns:
+                    df_to_save[col] = pd.to_numeric(df_to_save[col], errors="coerce")
+                    
+            if "volume" in df_to_save.columns:
+                # AKShare的成交量单位通常是手，数据库需要股
+                df_to_save["volume"] = (
+                    pd.to_numeric(df_to_save["volume"], errors="coerce") * 100
+                )
+                df_to_save["volume"] = df_to_save["volume"].astype("Int64")
+                
+            # 移除包含NaN主键的行
+            df_to_save.dropna(subset=["etf_code", "trade_date", "trade_time"], inplace=True)
+            
+            # 写入数据库
+            if save and self.engine:
+                success = upsert_df_to_sql(
+                    df_to_save,
+                    "minute_kline_data",
+                    self.engine,
+                    unique_columns=["etf_code", "trade_date", "trade_time", "period"],
+                )
+                
+                if success:
+                    logger.info(
+                        f"ETF {code} 的 {period} 分钟K线数据已成功写入数据库 minute_kline_data，共 {len(df_to_save)} 条记录"
+                    )
+                else:
+                    logger.error(f"ETF {code} 的 {period} 分钟K线数据写入数据库失败。")
+                    
+            return df_to_save
+            
+        except Exception as e:
+            logger.error(f"获取或处理ETF {code} 的 {period} 分钟K线数据失败: {e}", exc_info=True)
+            return pd.DataFrame()
 
 if __name__ == "__main__":
     from sqlalchemy import create_engine

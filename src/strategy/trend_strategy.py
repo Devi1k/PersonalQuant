@@ -580,6 +580,25 @@ class TrendStrategy:
             logger.warning("输入的数据为空")
             return df
         
+        # 首先调用各个信号函数生成必要的信号列
+        logger.info("开始生成各个策略信号")
+        
+        # 生成布林带突破信号
+        if 'bb_upper' in df.columns and 'bb_lower' in df.columns and 'bb_middle' in df.columns:
+            df = self.bollinger_bands_breakout(df)
+        
+        # 生成EMA交叉信号
+        if 'ema_21' in df.columns and 'ema_200' in df.columns:
+            df = self.ema_crossover_signal(df)
+        
+        # 生成EMA通道反转信号
+        if 'ema_144' in df.columns and 'ema_144_upper' in df.columns and 'ema_144_lower' in df.columns:
+            df = self.ema_channel_reversal(df)
+        
+        # 生成量价齐升确认信号
+        if 'volume' in df.columns and 'volume_ma_5' in df.columns:
+            df = self.volume_price_confirmation(df)
+        
         # 确保必要的信号列存在
         signal_cols = [
             'bb_signal', 'ema_signal', 'multi_timeframe_signal',

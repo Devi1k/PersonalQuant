@@ -151,3 +151,61 @@ def update_all_data(start_date=None, end_date=None, etf_codes=None):
         更新结果
     """
     return get_data_interface().update_all_data(start_date, end_date, etf_codes)
+
+def get_etf_minute_kline(code, period=5, start_date=None, end_date=None, force_update=False):
+    """
+    获取ETF分钟级别K线数据并计算技术指标
+    
+    Parameters
+    ----------
+    code : str
+        ETF代码，例如 "sh510050"
+    period : int, default 5
+        K线周期，支持 5（5分钟）、15（15分钟）、60（60分钟）
+    start_date : str, default None
+        开始日期，格式为 "YYYY-MM-DD"，默认为当前日期前7天
+    end_date : str, default None
+        结束日期，格式为 "YYYY-MM-DD"，默认为当前日期
+    force_update : bool, default False
+        是否强制更新数据
+        
+    Returns
+    -------
+    tuple
+        (分钟K线数据DataFrame, 技术指标DataFrame)
+    """
+    return get_data_interface().get_etf_minute_kline(
+        code=code,
+        period=period,
+        start_date=start_date,
+        end_date=end_date,
+        use_cache=not force_update,
+        force_update=force_update
+    )
+
+def update_minute_data(etf_codes, periods=None, start_date=None, end_date=None):
+    """
+    更新分钟级别K线数据和技术指标
+    
+    Parameters
+    ----------
+    etf_codes : list
+        ETF代码列表，例如 ["sh510050", "sh510300"]
+    periods : list, default None
+        K线周期列表，例如 [5, 15, 60]，默认为 [5, 15, 60]
+    start_date : str, default None
+        开始日期，格式为 "YYYY-MM-DD"，默认为当前日期前7天
+    end_date : str, default None
+        结束日期，格式为 "YYYY-MM-DD"，默认为当前日期
+        
+    Returns
+    -------
+    dict
+        更新结果
+    """
+    return get_data_interface().update_minute_data(
+        etf_codes=etf_codes,
+        periods=periods,
+        start_date=start_date,
+        end_date=end_date
+    )

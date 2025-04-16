@@ -1043,19 +1043,19 @@ class SwingStrategy:
             combined_df['hedge_signal'] = 0
             combined_df['hedge_ratio'] = 0 # If signal fails, ratio is also 0
 
-        # 5. Volume Price Microvalidation
-        # Pass the latest combined_df and level2_data
-        volume_price_df = self.volume_price_microvalidation(combined_df, level2_data) 
-        if not volume_price_df.empty and 'volume_price_signal' in volume_price_df.columns:
-             # Merge back into combined_df, handle potential existing column
-            if 'volume_price_signal' in combined_df.columns:
-                 combined_df['volume_price_signal'] = volume_price_df['volume_price_signal']
-            else:
-                combined_df = pd.merge(combined_df, volume_price_df[['date', 'volume_price_signal']], on='date', how='left')
-            combined_df['volume_price_signal'] = combined_df['volume_price_signal'].fillna(0)
-        else:
-            logger.warning("量价微观验证信号计算失败或未返回信号列，填充为0")
-            combined_df['volume_price_signal'] = 0
+        # # 5. Volume Price Microvalidation
+        # # Pass the latest combined_df and level2_data
+        # volume_price_df = self.volume_price_microvalidation(combined_df, level2_data) 
+        # if not volume_price_df.empty and 'volume_price_signal' in volume_price_df.columns:
+        #      # Merge back into combined_df, handle potential existing column
+        #     if 'volume_price_signal' in combined_df.columns:
+        #          combined_df['volume_price_signal'] = volume_price_df['volume_price_signal']
+        #     else:
+        #         combined_df = pd.merge(combined_df, volume_price_df[['date', 'volume_price_signal']], on='date', how='left')
+        #     combined_df['volume_price_signal'] = combined_df['volume_price_signal'].fillna(0)
+        # else:
+        #     logger.warning("量价微观验证信号计算失败或未返回信号列，填充为0")
+        #     combined_df['volume_price_signal'] = 0
 
         # --- Signal Filtering and Final Decision ---
         logger.info("生成最终信号，优先处理平仓信号")
