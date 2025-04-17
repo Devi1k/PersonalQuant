@@ -328,7 +328,9 @@ def main():
     create_directories()
     args.start = "2018-01-01"
     args.end = "2025-04-15"
-    args.mode = "fund_flow"
+    args.mode = "minute_kline"
+    args.code = "sh561360"
+    args.period = 60
     logger.info(f"启动数据获取脚本，获取模式: {args.mode}")
     try:
         if args.mode == 'all':
@@ -380,12 +382,12 @@ def main():
             
         elif args.mode == 'minute_update':
             # 更新分钟级别K线数据
-            if not args.codes:
+            if not args.code:
                 logger.error("更新分钟级别K线数据需要指定ETF代码列表")
                 return 1
             
             update_minute_kline_data(
-                etf_codes=args.codes,
+                etf_codes=args.code,
                 periods=args.periods if args.periods else None,
                 start_date=args.start,
                 end_date=args.end

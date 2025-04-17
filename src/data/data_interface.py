@@ -628,15 +628,53 @@ class DataInterface:
         if etf_codes is None and not industry_etfs.empty:
             etf_codes = industry_etfs["code"].tolist()
         
-        # 2. 更新ETF历史数据
+        # 2. 更新ETF历史数据和分钟线数据
         etf_count = 0
+        minute_kline_count = 0
+        minute_indicators_count = 0
+        
+        # 设置分钟线数据的起始日期为近7天
+        minute_start_date = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
+        minute_end_date = datetime.now().strftime("%Y-%m-%d")
+        
         if etf_codes:
             for code in etf_codes:
+                # 获取日线数据
                 df = self.get_etf_history(code, start_date, end_date, 
                                         use_cache=False, force_update=True)
                 if not df.empty:
                     etf_count += 1
+                
+                # 获取分钟线数据
+                # 对于分钟线数据，需要添加sh或sz前缀
+                if not code.startswith("sh") and not code.startswith("sz"):
+                    if code.startswith("6"):  # 上海市场
+                        minute_code = f"sh{code}"
+                    else:  # 深圳市场
+                        minute_code = f"sz{code}"
+                else:
+                    minute_code = code
+                
+                # 获取5分钟、15分钟和60分钟K线数据
+                for period in [5, 15, 60]:
+                    kline_df, indicators_df = self.get_etf_minute_kline(
+                        code=minute_code,
+                        period=period,
+                        start_date=minute_start_date,
+                        end_date=minute_end_date,
+                        use_cache=False,
+                        force_update=True
+                    )
+                    
+                    if not kline_df.empty:
+                        minute_kline_count += len(kline_df)
+                    
+                    if indicators_df is not None and not indicators_df.empty:
+                        minute_indicators_count += len(indicators_df)
+        
         result["etf_history"] = etf_count
+        result["minute_kline"] = minute_kline_count
+        result["minute_indicators"] = minute_indicators_count
         
         # 3. 更新指数历史数据
         index_codes = ["sh000001", "sh000300", "sh000905", "sz399001", "sz399006"]  # 上证、沪深300、中证500、深证成指、创业板指
@@ -646,7 +684,28 @@ class DataInterface:
                                       use_cache=False, force_update=True)
             if not df.empty:
                 index_count += 1
+                
+            # 获取指数的分钟线数据
+            for period in [5, 15, 60]:
+                kline_df, indicators_df = self.get_etf_minute_kline(
+                    code=code,
+                    period=period,
+                    start_date=minute_start_date,
+                    end_date=minute_end_date,
+                    use_cache=False,
+                    force_update=True
+                )
+                
+                if not kline_df.empty:
+                    minute_kline_count += len(kline_df)
+                
+                if indicators_df is not None and not indicators_df.empty:
+                    minute_indicators_count += len(indicators_df)
+                    
         result["index_history"] = index_count
+        # 更新分钟线数据计数
+        result["minute_kline"] = minute_kline_count
+        result["minute_indicators"] = minute_indicators_count
         
         # 4. 更新最新的行业资金流向
         fund_flow = self.get_industry_fund_flow(force_update=True)

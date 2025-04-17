@@ -160,6 +160,46 @@ class FusionStrategy:
         logger.info(f"根据市场状态调整权重: 趋势策略={trend_w:.2f}, 波段策略={swing_w:.2f}")
         return trend_w, swing_w
 
+    def calculate_weekly_data(self, df):
+        """
+        从日线数据计算周线数据
+        
+        Parameters
+        ----------
+        df : pandas.DataFrame
+            包含日线价格数据的DataFrame
+            
+        Returns
+        -------
+        pandas.DataFrame
+            周线数据DataFrame，包含date, close, high, low等列
+        """
+        if df.empty:
+            logger.warning("输入的日线数据为空，无法计算周线数据")
+            return pd.DataFrame()
+            
+        # 确保日期列是datetime类型
+        if not pd.api.types.is_datetime64_any_dtype(df['date']):
+            df['date'] = pd.to_datetime(df['date'])
+            
+        # 创建周开始日期列，用于分组
+        df['week_start'] = df['date'].apply(lambda x: x - pd.Timedelta(days=x.weekday()))
+        
+        # 按周分组并聚合数据
+        weekly_df = df.groupby('week_start').agg({
+            'open': 'first',          # 周一开盘价
+            'high': 'max',            # 周内最高价
+            'low': 'min',             # 周内最低价
+            'close': 'last',          # 周五收盘价
+            'volume': 'sum'           # 周成交量总和
+        }).reset_index()
+        
+        # 将week_start列重命名为date
+        weekly_df.rename(columns={'week_start': 'date'}, inplace=True)
+        
+        logger.info(f"成功计算周线数据，共 {len(weekly_df)} 条记录")
+        return weekly_df
+
     def combine_strategies(self, df):
         """
         融合趋势策略与波段策略信号
@@ -175,10 +215,65 @@ class FusionStrategy:
         market_state = self.identify_market_state(df)
         trend_w, swing_w = self.adaptive_weights(market_state)
 
+        # 计算周线数据，用于波段策略
+        weekly_df = self.calculate_weekly_data(df)
+
         # 运行趋势策略
         trend_df = self.trend_strategy.combine_signals(df)
+        
+        # 获取分钟级别K线数据
+        df_5min = pd.DataFrame()
+        df_15min = pd.DataFrame()
+        df_60min = pd.DataFrame()
+        
+        # 获取ETF代码和日期范围
+        etf_code = df['etf_code'].iloc[0] if 'etf_code' in df.columns else None
+        start_date = df['trade_date'].min().strftime('%Y-%m-%d') if 'trade_date' in df.columns else None
+        end_date = df['trade_date'].max().strftime('%Y-%m-%d') if 'trade_date' in df.columns else None
+        
+        if etf_code and start_date and end_date:
+            # 导入数据库工具
+            from src.utils.db_utils import get_db_engine, query_minute_kline_data
+            
+            # 获取数据库引擎
+            engine = get_db_engine()
+            
+            if engine:
+                # 查询5分钟K线数据
+                df_5min = query_minute_kline_data(
+                    engine=engine,
+                    etf_code=etf_code,
+                    period=5,
+                    start_date=start_date,
+                    end_date=end_date
+                )
+                
+                # 查询15分钟K线数据
+                df_15min = query_minute_kline_data(
+                    engine=engine,
+                    etf_code=etf_code,
+                    period=15,
+                    start_date=start_date,
+                    end_date=end_date
+                )
+                
+                # 查询60分钟K线数据
+                df_60min = query_minute_kline_data(
+                    engine=engine,
+                    etf_code=etf_code,
+                    period=60,
+                    start_date=start_date,
+                    end_date=end_date
+                )
+                
+                logger.info(f"成功获取ETF {etf_code} 的分钟级别K线数据：5分钟({len(df_5min)}条)，15分钟({len(df_15min)}条)，60分钟({len(df_60min)}条)")
+            else:
+                logger.warning("数据库引擎创建失败，无法获取分钟级别K线数据")
+        else:
+            logger.warning(f"缺少必要的数据：etf_code={etf_code}, start_date={start_date}, end_date={end_date}，无法获取分钟级别K线数据")
+        
         # 运行波段策略
-        swing_df = self.swing_strategy.combine_signals(df)
+        swing_df = self.swing_strategy.combine_signals(df_5min, df_15min, df_60min, weekly_df)
 
         # 融合信号
         combined_df = df.copy()

@@ -682,9 +682,11 @@ class DataProcessor:
             processed_df["trade_date"] = pd.to_datetime(processed_df["trade_date"]).dt.date
         
         if "trade_time" in processed_df.columns:
-            # 确保trade_time是time类型
-            if not pd.api.types.is_time_dtype(processed_df["trade_time"]):
+            try:
                 processed_df["trade_time"] = pd.to_datetime(processed_df["trade_time"]).dt.time
+            except TypeError:
+                # 如果已经是time类型，可能会抛出TypeError
+                pass
         
         # 填充缺失值
         if fill_missing:

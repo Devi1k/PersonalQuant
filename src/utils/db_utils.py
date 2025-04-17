@@ -330,25 +330,100 @@ def query_etf_list(engine):
         pandas.DataFrame: 包含所有 ETF 基础信息的 DataFrame，如果查询失败则返回空 DataFrame
     """
     if engine is None:
-        logger.error("数据库引擎无效，无法查询 ETF List。")
+        logger.error("数据库引擎无效，无法查询 ETF 列表。")
         return pd.DataFrame()
     
     try:
-        # 构建查询语句
+        # 构建查询
         query = "SELECT * FROM etf_list"
         
         # 执行查询
         df = pd.read_sql(query, engine)
-        
-        logger.info(f"成功从 etf_list 表中查询到 {len(df)} 条 ETF 记录。")
+        logger.info(f"成功从数据库查询到 {len(df)} 条 ETF 记录。")
         return df
-    
     except SQLAlchemyError as e:
-        logger.error(f"查询 ETF List 表时出错: {e}")
+        logger.error(f"查询 ETF 列表时发生错误: {e}")
         return pd.DataFrame()
     except Exception as e:
-        logger.error(f"查询 ETF List 表时发生未知错误: {e}")
+        logger.error(f"查询 ETF 列表时发生未知错误: {e}")
         return pd.DataFrame()
+
+def query_minute_kline_data(engine, etf_code, period, start_date=None, end_date=None):
+    """
+    从数据库中查询分钟级别K线数据和指标
+    
+    Args:
+        engine: SQLAlchemy 数据库引擎
+        etf_code (str): ETF代码，如 "510050"
+        period (int): K线周期，支持 5（5分钟）、15（15分钟）、60（60分钟）
+        start_date (str, optional): 开始日期，格式 "YYYY-MM-DD"
+        end_date (str, optional): 结束日期，格式 "YYYY-MM-DD"
+        
+    Returns:
+        pandas.DataFrame: 包含分钟级别K线数据和指标的DataFrame，如果查询失败则返回空DataFrame
+    """
+    if engine is None:
+        logger.error("数据库引擎无效，无法查询分钟级别K线数据。")
+        return pd.DataFrame()
+    
+    try:
+        # 构建基础查询
+        query = """
+        SELECT 
+            CONCAT(k.trade_date, ' ', k.trade_time) AS date,
+            k.close,
+            k.open,
+            k.high,
+            k.low,
+            k.volume,
+            i.rsi_14,
+            i.bb_lower,
+            i.bb_middle,
+            i.bb_upper
+        FROM 
+            minute_kline_data k
+        LEFT JOIN 
+            minute_indicators i 
+        ON 
+            k.etf_code = i.etf_code AND 
+            k.trade_date = i.trade_date AND 
+            k.trade_time = i.trade_time AND 
+            k.period = i.period
+        WHERE 
+            k.etf_code = :etf_code AND 
+            k.period = :period
+        """
+        
+        # 添加日期过滤条件
+        params = {"etf_code": etf_code, "period": period}
+        
+        if start_date:
+            query += " AND k.trade_date >= :start_date"
+            params["start_date"] = start_date
+            
+        if end_date:
+            query += " AND k.trade_date <= :end_date"
+            params["end_date"] = end_date
+        
+        # 添加排序
+        query += " ORDER BY k.trade_date, k.trade_time"
+        
+        # 执行查询
+        df = pd.read_sql(text(query), engine, params=params)
+        
+        # 转换日期列为datetime类型
+        if 'date' in df.columns:
+            df['date'] = pd.to_datetime(df['date'])
+        
+        logger.info(f"成功查询到ETF {etf_code} 的 {period} 分钟K线数据，共 {len(df)} 条记录。")
+        return df
+    except SQLAlchemyError as e:
+        logger.error(f"查询分钟级别K线数据时发生错误: {e}")
+        return pd.DataFrame()
+    except Exception as e:
+        logger.error(f"查询分钟级别K线数据时发生未知错误: {e}")
+        return pd.DataFrame()
+
 
 # --- 测试代码 (可选) ---
 if __name__ == '__main__':
@@ -435,5 +510,3 @@ if __name__ == '__main__':
             logger.error("数据库引擎创建失败，测试中止。")
     else:
         logger.error("配置文件加载失败，测试中止。")
-
-
