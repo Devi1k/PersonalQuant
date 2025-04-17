@@ -633,9 +633,9 @@ class DataInterface:
         minute_kline_count = 0
         minute_indicators_count = 0
         
-        # 设置分钟线数据的起始日期为近7天
-        minute_start_date = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
-        minute_end_date = datetime.now().strftime("%Y-%m-%d")
+        # 设置分钟线数据的起始日期与传入参数一致
+        minute_start_date = start_date
+        minute_end_date = end_date
         
         if etf_codes:
             for code in etf_codes:

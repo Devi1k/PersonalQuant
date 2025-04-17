@@ -328,9 +328,7 @@ def main():
     create_directories()
     args.start = "2018-01-01"
     args.end = "2025-04-15"
-    args.mode = "minute_kline"
-    args.code = "sh561360"
-    args.period = 60
+    args.mode = "all"
     logger.info(f"启动数据获取脚本，获取模式: {args.mode}")
     try:
         if args.mode == 'all':

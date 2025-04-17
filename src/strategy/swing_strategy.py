@@ -36,8 +36,8 @@ class SwingStrategy:
 
         # 多周期动量确认系统参数
         self.rsi_period = swing_config.get("rsi_period", 14)
-        self.rsi_oversold = swing_config.get("rsi_oversold", 35)  # 从30调整到35
-        self.kdj_j_oversold = swing_config.get("kdj_j_oversold", 25)  # 从20调整到25
+        self.rsi_oversold = swing_config.get("rsi_oversold", 40)  # 从35调整到40，适应ETF较低波动性
+        self.kdj_j_oversold = swing_config.get("kdj_j_oversold", 30)  # 从25调整到30，适应ETF较低波动性
         self.macd_bars_increasing = swing_config.get("macd_bars_increasing", 2)  # 从3调整到2
         self.double_bottom_volume_ratio = swing_config.get(
             "double_bottom_volume_ratio", 1.2  # 从1.3调整到1.2
@@ -45,14 +45,14 @@ class SwingStrategy:
 
         # 通道回归均值策略参数
         self.bollinger_period = swing_config.get("bollinger_period", 20)
-        self.bollinger_std_dev = swing_config.get("bollinger_std_dev", 2.0)
+        self.bollinger_std_dev = swing_config.get("bollinger_std_dev", 1.8)  # 从2.0调整到1.8，适应ETF较低波动性
         self.bollinger_reversion_bars = swing_config.get("bollinger_reversion_bars", 3)
         self.kdj_params = swing_config.get(
             "kdj_params", (9, 3, 3)
         )  # (K周期, D周期, J周期)
         self.atr_period = swing_config.get("atr_period", 14)
         self.atr_stop_loss_multiplier = swing_config.get(
-            "atr_stop_loss_multiplier", 1.5
+            "atr_stop_loss_multiplier", 1.2  # 从1.5调整到1.2，适应ETF较低波动性
         )
         # self.max_breakout_minutes = swing_config.get('max_breakout_minutes', 20) # 注释掉，因为未在代码中使用
 
@@ -66,7 +66,7 @@ class SwingStrategy:
         self.triangle_support_volume_ratio = swing_config.get(
             "triangle_support_volume_ratio", 0.7
         )
-        self.flag_pole_min_rise = swing_config.get("flag_pole_min_rise", 0.15)
+        self.flag_pole_min_rise = swing_config.get("flag_pole_min_rise", 0.08)  # 从0.15调整到0.08，适应ETF较低波动性
         self.flag_max_retracement = swing_config.get("flag_max_retracement", 0.382)
 
         # 对冲型仓位平衡参数
@@ -76,11 +76,11 @@ class SwingStrategy:
             "hedge_option_delta", (0.3, 0.4)
         )  # (最小Delta, 最大Delta)
         self.hedge_position_ratio = swing_config.get(
-            "hedge_position_ratio", (0.15, 0.25)
-        )  # (最小比例, 最大比例)
+            "hedge_position_ratio", (0.1, 0.2)
+        )  # (最小比例, 最大比例)，从(0.15, 0.25)调整到(0.1, 0.2)
         self.ema_channel_width = swing_config.get(
-            "ema_channel_width", 0.05
-        )  # EMA通道宽度
+            "ema_channel_width", 0.03
+        )  # EMA通道宽度，从0.05调整到0.03
 
         # 量价微观验证参数
         self.vwap_volume_ratio = swing_config.get("vwap_volume_ratio", 1.2)
@@ -91,16 +91,16 @@ class SwingStrategy:
 
         # 信号组合权重
         default_weights = {
-            "momentum_signal": 2.0,  # 多周期动量确认信号
-            "bollinger_signal": 2.0,  # 通道回归均值信号
-            "pattern_signal": 1.5,  # 形态驱动反转信号
+            "momentum_signal": 2.5,  # 多周期动量确认信号，从2.0提高到2.5
+            "bollinger_signal": 2.5,  # 通道回归均值信号，从2.0提高到2.5
+            "pattern_signal": 1.0,  # 形态驱动反转信号，从1.5降低到1.0
             "hedge_signal": 1.0,  # 对冲型仓位平衡信号
-            "volume_price_signal": 1.5,  # 量价微观验证信号
+            "volume_price_signal": 0.0,  # 量价微观验证信号，从1.5降低到0.0
         }
         self.signal_weights = swing_config.get("signal_weights", default_weights)
         self.combined_signal_threshold = swing_config.get(
-            "combined_signal_threshold", 2.0
-        )  # 最终信号合并阈值
+            "combined_signal_threshold", 1.8
+        )  # 最终信号合并阈值，从2.0调整到1.8
 
         logger.info(
             f"波段策略初始化完成，参数：RSI周期={self.rsi_period}, RSI超卖阈值={self.rsi_oversold}, "
@@ -211,7 +211,7 @@ class SwingStrategy:
             False
         )
 
-        # 3. 执行逻辑：观察60分钟K线是否形成双底形态（第二个底不创新低，且右底成交量>左底1.3倍）
+        # 3. 执行逻辑：观察60分钟K线是否形成双底形态（第二个底不创新低）
         # 将60分钟K线数据合并到5分钟数据
         df_60min_copy = df_60min.copy()
         df_60min_copy["date_rounded"] = df_60min_copy["date"].apply(
@@ -240,10 +240,8 @@ class SwingStrategy:
                 
             # 检查第二个底是否不创新低
             if df_60min_copy.loc[right_bottom_idx, "low"] >= df_60min_copy.loc[left_bottom_idx, "low"]:
-                # 检查右底成交量是否大于左底成交量的1.2倍
-                if (df_60min_copy.loc[right_bottom_idx, "volume"] > 
-                    df_60min_copy.loc[left_bottom_idx, "volume"] * self.double_bottom_volume_ratio):
-                    df_60min_copy.loc[right_bottom_idx, "double_bottom"] = True
+                # 移除成交量检查，直接标记为双底
+                df_60min_copy.loc[right_bottom_idx, "double_bottom"] = True
 
         # 准备60分钟双底数据用于合并
         df_60min_bottom = df_60min_copy[["date_rounded", "double_bottom"]].rename(
@@ -352,19 +350,23 @@ class SwingStrategy:
                 if (result_df.loc[head_idx, 'low'] < result_df.loc[left_shoulder_idx, 'low'] and
                     result_df.loc[head_idx, 'low'] < result_df.loc[right_shoulder_idx, 'low']):
                     
-                    # 检查右肩成交量是否大于头部的50%
-                    if (result_df.loc[right_shoulder_idx, 'volume'] > 
-                        result_df.loc[head_idx, 'volume'] * self.head_shoulder_volume_ratio):
-                        
-                        # 计算颈线（左肩和右肩之间的高点）
-                        neck_line = result_df.loc[left_shoulder_idx:right_shoulder_idx, 'high'].max()
-                        
-                        # 检查是否突破颈线
-                        if result_df.loc[i, 'close'] > neck_line:
-                            # 检查突破时成交量是否大于5日均量的2倍
-                            if (result_df.loc[i, 'volume'] > 
-                                result_df.loc[i, 'volume_ma_5'] * self.head_shoulder_breakout_volume_ratio):
-                                result_df.loc[i, 'head_shoulder_bottom'] = True
+                    # 移除右肩成交量检查
+                    # 原代码：
+                    # # 检查右肩成交量是否大于头部的50%
+                    # if (result_df.loc[right_shoulder_idx, 'volume'] > 
+                    #     result_df.loc[head_idx, 'volume'] * self.head_shoulder_volume_ratio):
+                    
+                    # 计算颈线（左肩和右肩之间的高点）
+                    neck_line = result_df.loc[left_shoulder_idx:right_shoulder_idx, 'high'].max()
+                    
+                    # 检查是否突破颈线
+                    if result_df.loc[i, 'close'] > neck_line:
+                        # 移除突破时成交量检查
+                        # 原代码：
+                        # # 检查突破时成交量是否大于5日均量的2倍
+                        # if (result_df.loc[i, 'volume'] > 
+                        #     result_df.loc[i, 'volume_ma_5'] * self.head_shoulder_breakout_volume_ratio):
+                        result_df.loc[i, 'head_shoulder_bottom'] = True
 
         # 2. 上升三角形识别 - 向量化实现
         for i in range(20, len(result_df)):
@@ -398,15 +400,19 @@ class SwingStrategy:
                     if len(support_touches) >= 3:
                         third_touch_idx = support_touches[2]
                         
-                        # 检查第3次回踩支撑线是否缩量
-                        if (window["volume"].iloc[third_touch_idx] < 
-                            window["volume_ma_5"].iloc[third_touch_idx] * self.triangle_support_volume_ratio):
-                            
-                            # 检查是否突破阻力线
-                            if window["close"].iloc[-1] > np.max(highs[:-1]):
-                                # 检查突破时是否放量
-                                if window["volume"].iloc[-1] > window["volume_ma_5"].iloc[-1] * 1.5:
-                                    result_df.loc[result_df.index[i], "ascending_triangle"] = True
+                        # 移除第3次回踩支撑线缩量检查
+                        # 原代码：
+                        # # 检查第3次回踩支撑线是否缩量
+                        # if (window["volume"].iloc[third_touch_idx] < 
+                        #     window["volume_ma_5"].iloc[third_touch_idx] * self.triangle_support_volume_ratio):
+                        
+                        # 检查是否突破阻力线
+                        if window["close"].iloc[-1] > np.max(highs[:-1]):
+                            # 移除突破时放量检查
+                            # 原代码：
+                            # # 检查突破时是否放量
+                            # if window["volume"].iloc[-1] > window["volume_ma_5"].iloc[-1] * 1.5:
+                            result_df.loc[result_df.index[i], "ascending_triangle"] = True
 
         # 3. 旗形整理识别 - 向量化实现
         for i in range(15, len(result_df)):
@@ -448,18 +454,22 @@ class SwingStrategy:
                 if (result_df.loc[head_idx, 'high'] > result_df.loc[left_shoulder_idx, 'high'] and
                     result_df.loc[head_idx, 'high'] > result_df.loc[right_shoulder_idx, 'high']):
                     
-                    # 检查右肩成交量是否小于头部的50%（缩量特征）
-                    if (result_df.loc[right_shoulder_idx, 'volume'] < 
-                        result_df.loc[head_idx, 'volume'] * self.head_shoulder_volume_ratio):
-                        
-                        # 计算颈线（左肩和右肩之间的低点）
-                        neck_line = result_df.loc[left_shoulder_idx:right_shoulder_idx, 'low'].min()
-                        
-                        # 检查是否跌破颈线
-                        if result_df.loc[i, 'close'] < neck_line:
-                            # 检查跌破时成交量是否大于5日均量1.5倍
-                            if result_df.loc[i, 'volume'] > result_df.loc[i, 'volume_ma_5'] * 1.5:
-                                result_df.loc[i, 'head_shoulder_top'] = True
+                    # 移除右肩成交量检查
+                    # 原代码：
+                    # # 检查右肩成交量是否小于头部的50%（缩量特征）
+                    # if (result_df.loc[right_shoulder_idx, 'volume'] < 
+                    #     result_df.loc[head_idx, 'volume'] * self.head_shoulder_volume_ratio):
+                    
+                    # 计算颈线（左肩和右肩之间的低点）
+                    neck_line = result_df.loc[left_shoulder_idx:right_shoulder_idx, 'low'].min()
+                    
+                    # 检查是否跌破颈线
+                    if result_df.loc[i, 'close'] < neck_line:
+                        # 移除跌破时成交量检查
+                        # 原代码：
+                        # # 检查跌破时成交量是否大于5日均量1.5倍
+                        # if result_df.loc[i, 'volume'] > result_df.loc[i, 'volume_ma_5'] * 1.5:
+                        result_df.loc[i, 'head_shoulder_top'] = True
 
         # 5. 计算RSI背离 - 向量化实现
         # 初始化背离列
@@ -1056,6 +1066,18 @@ class SwingStrategy:
         # else:
         #     logger.warning("量价微观验证信号计算失败或未返回信号列，填充为0")
         #     combined_df['volume_price_signal'] = 0
+
+        # 由于量价微观验证逻辑不适用于ETF，直接将volume_price_signal设为0
+        combined_df['volume_price_signal'] = 0
+        
+        # 计算加权信号
+        combined_df["weighted_signal"] = (
+            combined_df["momentum_signal"] * self.signal_weights["momentum_signal"]
+            + combined_df["bollinger_signal"] * self.signal_weights["bollinger_signal"]
+            + combined_df["pattern_signal"] * self.signal_weights["pattern_signal"]
+            + combined_df["hedge_signal"] * self.signal_weights["hedge_signal"]
+            + combined_df["volume_price_signal"] * self.signal_weights["volume_price_signal"]
+        )
 
         # --- Signal Filtering and Final Decision ---
         logger.info("生成最终信号，优先处理平仓信号")

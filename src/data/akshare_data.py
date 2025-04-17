@@ -776,7 +776,7 @@ class AKShareData:
             period_map = {5: "5", 15: "15", 60: "60"}
             period_str = period_map.get(period, "5")
             
-            df = ak.stock_zh_a_hist_min_em(
+            df = ak.stock_zh_a_minute(
                 symbol=code_no_prefix,
                 period=period_str,
                 start_date=start_date_req,

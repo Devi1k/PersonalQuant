@@ -356,7 +356,7 @@ class TrendStrategy:
     
     def ema_channel_reversal(self, df):
         """
-        对冲型反转策略（基于144日EMA均线通道的突破交易）
+        对冲型反转策略（基于144日EMA均线通道的反转交易）
         
         Parameters
         ----------
@@ -406,30 +406,35 @@ class TrendStrategy:
             (result_df['close'].shift(1) >= result_df['ema_144_lower'].shift(1))
         )
         
-        # 计算反转信号
-        # 1. 超买反转：价格突破上轨后回落
-        # 2. 超卖反转：价格突破下轨后回升
-        
         # 初始化信号列
         result_df['ema_reversal_signal'] = 0
         
-        # 超买反转信号（做空）：价格突破上轨后回落至通道内
-        for i in range(1, len(result_df)):
-            # 查找过去5个周期内是否有上轨突破
-            lookback = min(5, i)
-            if (result_df['upper_breakout'].iloc[i-lookback:i].any() and
-                result_df['close'].iloc[i] < result_df['ema_144_upper'].iloc[i] and
-                result_df['close'].iloc[i-1] >= result_df['ema_144_upper'].iloc[i-1]):
-                result_df.loc[result_df.index[i], 'ema_reversal_signal'] = -1
+        # 向量化实现超买反转信号（做空）：价格突破上轨后回落至通道内
+        # 创建一个滚动窗口来检测过去5个周期内是否有上轨突破
+        result_df['upper_breakout_5d'] = result_df['upper_breakout'].rolling(window=5, min_periods=1).max()
         
-        # 超卖反转信号（做多）：价格突破下轨后回升至通道内
-        for i in range(1, len(result_df)):
-            # 查找过去5个周期内是否有下轨突破
-            lookback = min(5, i)
-            if (result_df['lower_breakout'].iloc[i-lookback:i].any() and
-                result_df['close'].iloc[i] > result_df['ema_144_lower'].iloc[i] and
-                result_df['close'].iloc[i-1] <= result_df['ema_144_lower'].iloc[i-1]):
-                result_df.loc[result_df.index[i], 'ema_reversal_signal'] = 1
+        # 超买反转条件：过去5天内有上轨突破，且当前价格回落到通道内，前一天价格还在通道外
+        result_df.loc[
+            (result_df['upper_breakout_5d'] > 0) &
+            (result_df['close'] < result_df['ema_144_upper']) &
+            (result_df['close'].shift(1) >= result_df['ema_144_upper']),
+            'ema_reversal_signal'
+        ] = -1
+        
+        # 向量化实现超卖反转信号（做多）：价格突破下轨后回升至通道内
+        # 创建一个滚动窗口来检测过去5个周期内是否有下轨突破
+        result_df['lower_breakout_5d'] = result_df['lower_breakout'].rolling(window=5, min_periods=1).max()
+        
+        # 超卖反转条件：过去5天内有下轨突破，且当前价格回升到通道内，前一天价格还在通道外
+        result_df.loc[
+            (result_df['lower_breakout_5d'] > 0) &
+            (result_df['close'] > result_df['ema_144_lower']) &
+            (result_df['close'].shift(1) <= result_df['ema_144_lower']),
+            'ema_reversal_signal'
+        ] = 1
+        
+        # 删除临时列
+        result_df.drop(['upper_breakout_5d', 'lower_breakout_5d'], axis=1, inplace=True)
         
         # 统计信号数量
         buy_signals = (result_df['ema_reversal_signal'] == 1).sum()
@@ -440,7 +445,11 @@ class TrendStrategy:
     
     def volume_price_confirmation(self, df):
         """
-        量价齐升确认（成交量>5日均量*1.2）
+        量价确认策略
+        
+        包含两种确认信号：
+        1. 量价齐升确认（成交量>5日均量*阈值且价格上涨）- 买入信号
+        2. 量增价跌确认（成交量>5日均量*阈值且价格下跌）- 卖出信号
         
         Parameters
         ----------
@@ -450,7 +459,7 @@ class TrendStrategy:
         Returns
         -------
         pandas.DataFrame
-            添加了量价齐升确认信号的数据框
+            添加了量价确认信号的数据框
         """
         if df.empty:
             logger.warning("输入的数据为空")
@@ -460,10 +469,10 @@ class TrendStrategy:
         required_cols = ["date", "close", "volume", "volume_ma_5"]
         missing_cols = [col for col in required_cols if col not in df.columns]
         if missing_cols:
-            logger.error(f"量价齐升确认策略所需的列缺失: {missing_cols}")
+            logger.error(f"量价确认策略所需的列缺失: {missing_cols}")
             return df
         
-        logger.info("开始计算量价齐升确认信号")
+        logger.info("开始计算量价确认信号")
         
         # 复制数据，避免修改原始数据
         result_df = df.copy()
@@ -474,17 +483,25 @@ class TrendStrategy:
         # 计算成交量是否超过5日均量的阈值
         result_df['volume_surge'] = result_df['volume'] > (result_df['volume_ma_5'] * self.volume_threshold)
         
-        # 计算量价齐升确认信号
+        # 计算量价确认信号
         # 1 = 买入信号（价格上涨且成交量放大）
+        # -1 = 卖出信号（价格下跌且成交量放大）
         # 0 = 无信号
         
         result_df['volume_price_signal'] = 0
+        
+        # 量价齐升确认 - 买入信号
         result_df.loc[(result_df['price_change'] > 0) &
                       (result_df['volume_surge']), 'volume_price_signal'] = 1
+                      
+        # 量增价跌确认 - 卖出信号
+        result_df.loc[(result_df['price_change'] < 0) &
+                      (result_df['volume_surge']), 'volume_price_signal'] = -1
         
         # 统计信号数量
         buy_signals = (result_df['volume_price_signal'] == 1).sum()
-        logger.info(f"量价齐升确认信号计算完成，买入信号: {buy_signals}个")
+        sell_signals = (result_df['volume_price_signal'] == -1).sum()
+        logger.info(f"量价确认信号计算完成，买入信号: {buy_signals}个, 卖出信号: {sell_signals}个")
         
         return result_df
     
@@ -492,11 +509,13 @@ class TrendStrategy:
         """
         K线收盘价交易执行（减少滑点冲击）
         
-        支持小数值信号处理：
-        - 1.0: 完全买入信号（标准仓位）
-        - 0.5: 试探性买入信号（小仓位）
-        - -0.5: 减仓信号（部分卖出）
-        - -1.0: 完全卖出信号（清仓）
+        处理信号并设置执行价格，但不计算仓位。
+        信号含义：
+        - 1.0: 买入信号
+        - 0.5: 试探性买入信号
+        - 0: 无操作
+        - -0.5: 减仓信号
+        - -1.0: 卖出信号
         
         Parameters
         ----------
@@ -536,16 +555,6 @@ class TrendStrategy:
         execution_col = f"{signal_col}_execution"
         result_df[execution_col] = result_df[signal_col]
         
-        # 创建仓位大小列（根据信号强度）
-        position_col = f"{signal_col}_position"
-        result_df[position_col] = 0.0
-        
-        # 设置不同信号对应的仓位大小
-        result_df.loc[result_df[signal_col] == 1, position_col] = 1.0      # 完全买入（标准仓位）
-        result_df.loc[result_df[signal_col] == 0.5, position_col] = 0.3    # 试探性买入（小仓位，30%）
-        result_df.loc[result_df[signal_col] == -0.5, position_col] = -0.5  # 减仓（减少50%仓位）
-        result_df.loc[result_df[signal_col] == -1, position_col] = -1.0    # 完全卖出（清仓）
-        
         # 统计信号数量和类型
         full_buy = (result_df[execution_col] == 1).sum()
         small_buy = (result_df[execution_col] == 0.5).sum()
@@ -574,7 +583,7 @@ class TrendStrategy:
         Returns
         -------
         pandas.DataFrame
-            添加了组合信号的数据框
+            添加了组合信号和仓位的数据框
         """
         if df.empty:
             logger.warning("输入的数据为空")
@@ -704,6 +713,16 @@ class TrendStrategy:
         
         # 应用收盘价交易执行
         result_df = self.close_price_execution(result_df, 'final_signal')
+        
+        # 添加仓位计算逻辑（之前在close_price_execution中）
+        # 创建仓位大小列
+        result_df['final_signal_position'] = 0.0
+        
+        # 设置不同信号对应的仓位大小
+        result_df.loc[result_df['final_signal'] == 1, 'final_signal_position'] = 1.0    # 完全买入（标准仓位）
+        result_df.loc[result_df['final_signal'] == 0.5, 'final_signal_position'] = 0.3  # 试探性买入（小仓位，30%）
+        result_df.loc[result_df['final_signal'] == -0.5, 'final_signal_position'] = -0.5 # 减仓（减少50%仓位）
+        result_df.loc[result_df['final_signal'] == -1, 'final_signal_position'] = -1.0  # 完全卖出（清仓）
         
         # 统计信号数量
         buy_signals = (result_df['final_signal'] > 0).sum()
