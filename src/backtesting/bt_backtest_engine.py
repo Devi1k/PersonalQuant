@@ -47,35 +47,35 @@ class PandasDataExtend(btfeeds.PandasData):
     # 设置列的默认值
     params = (
         ('datetime', None),
-        ('open', -1),
-        ('high', -1),
-        ('low', -1),
-        ('close', -1),
-        ('volume', -1),
+        ('open', 'open'),        # Explicitly map 'open' line to 'open' column
+        ('high', 'high'),        # Explicitly map 'high' line to 'high' column
+        ('low', 'low'),          # Explicitly map 'low' line to 'low' column
+        ('close', 'close'),      # Explicitly map 'close' line to 'close' column
+        ('volume', 'volume'),    # Explicitly map 'volume' line to 'volume' column
         ('openinterest', None),
-        ('volume_ma5', -1),
-        ('volume_ma10', -1),
-        ('ma5', -1),
-        ('ma10', -1),
-        ('ma20', -1),
-        ('ma60', -1),
-        ('ma120', -1),
-        ('ma250', -1),
-        ('rsi', -1),
-        ('kdj_k', -1),
-        ('kdj_d', -1),
-        ('kdj_j', -1),
-        ('macd', -1),
-        ('macd_signal', -1),
-        ('macd_hist', -1),
-        ('boll_upper', -1),
-        ('boll_middle', -1),
-        ('boll_lower', -1),
-        ('atr', -1),
-        ('adx', -1),
-        ('signal', 0),  # 0: 无信号, 1: 买入, -1: 卖出
-        ('long_stop_loss', -1),
-        ('short_stop_loss', -1),
+        ('volume_ma5', 'volume_ma5'),
+        ('volume_ma10', 'volume_ma10'),
+        ('ma5', 'ma5'),
+        ('ma10', 'ma10'),
+        ('ma20', 'ma20'),
+        ('ma60', 'ma60'),
+        ('ma120', 'ma120'),
+        ('ma250', 'ma250'),
+        ('rsi', 'rsi'),
+        ('kdj_k', 'kdj_k'),
+        ('kdj_d', 'kdj_d'),
+        ('kdj_j', 'kdj_j'),
+        ('macd', 'macd'),
+        ('macd_signal', 'macd_signal'),
+        ('macd_hist', 'macd_hist'),
+        ('boll_upper', 'boll_upper'),
+        ('boll_middle', 'boll_middle'),
+        ('boll_lower', 'boll_lower'),
+        ('atr', 'atr'),
+        ('adx', 'adx'),
+        ('signal', 'signal'), # Explicitly map 'signal' line to 'signal' column
+        ('long_stop_loss', 'long_stop_loss'),
+        ('short_stop_loss', 'short_stop_loss'),
     )
 
 
@@ -88,26 +88,31 @@ class FusionStrategyBT(bt.Strategy):
         ('swing_weight', 0.4),  # 波段策略权重
         ('adx_threshold', 25),  # ADX 阈值，用于判断趋势强度
         ('confirmation_multiplier', 1.5),  # 协同确认增强系数
-        ('risk_pct', 0.02),  # 单笔风险比例
+        ('risk_pct', 0.02),  # 单笔风险比例 (基于总资产)
         ('max_positions', 5),  # 最大持仓数量
         ('use_custom_signals', True),  # 是否使用自定义信号
-        ('atr_stop_loss_multiplier', 1.5),  # ATR止损乘数
-        ('trailing_stop', False),  # 是否启用跟踪止损
-        ('trailing_percent', 0.5),  # 跟踪止损百分比(0-1)，表示ATR的比例
+        # 下面的止损参数主要在 use_custom_signals=False 时使用，或作为信号驱动模式的备用
+        ('atr_stop_loss_multiplier', 1.5),
+        ('trailing_stop', False),
+        ('trailing_percent', 0.5),
     )
-    
+
     def __init__(self):
         """初始化策略"""
-        
-        # 记录订单和持仓
-        self.orders = {}  # 订单跟踪
-        self.positions_info = {}  # 持仓信息
-        
-        # 使用自定义信号或计算指标
+        super().__init__()
+        self.order = None  # 初始化订单状态
+        self.positions_info = {}
+
         if self.params.use_custom_signals:
-            # 使用数据源中已有的信号
+            if 'signal' not in self.data.lines.getlinealiases():
+                 raise ValueError("数据源缺少 'signal' 列，无法使用自定义信号模式。")
             self.signal = self.data.signal
+            # 保留ATR计算，可能用于其他地方（如分析或备用止损）
+            self.atr = self.data.atr if hasattr(self.data.lines, 'atr') else bt.indicators.ATR(self.data, period=14)
+            logger.info("策略初始化：使用数据源中的自定义信号。")
         else:
+            logger.info("策略初始化：使用内置指标计算信号。")
+            # 此处省略了内置指标的计算代码，保持不变
             # 计算自定义指标
             # 移动平均线
             self.ma5 = self.data.ma5 if 'ma5' in self.data.lines._getlinealias() else bt.indicators.SMA(self.data.close, period=5)
@@ -138,213 +143,146 @@ class FusionStrategyBT(bt.Strategy):
             
             # ATR
             self.atr = self.data.atr if 'atr' in self.data.lines._getlinealias() else bt.indicators.ATR(self.data, period=14)
-    
+
     def log(self, txt, dt=None):
         """日志函数"""
         dt = dt or self.datas[0].datetime.date(0)
         logger.info(f'{dt.isoformat()} {txt}')
-    
+
     def notify_order(self, order):
         """订单状态通知"""
+        ticker = order.data._name if order.data else 'Unknown'
+        current_date = self.data.datetime.date(0)
+
         if order.status in [order.Submitted, order.Accepted]:
-            # 订单提交或接受，不做任何处理
+            # 订单已提交或已接受，无需操作
+            if self.order and self.order.ref == order.ref:
+                self.log(f'{current_date} - Order {order.Status[order.status]} - Ref: {order.ref}, Ticker: {ticker}')
             return
-        
-        # 检查订单是否完成
+
         if order.status in [order.Completed]:
-            if order.isbuy():
-                self.log(f'买入执行: 价格={order.executed.price:.2f}, 成本={order.executed.value:.2f}, 手续费={order.executed.comm:.2f}')
-                # 记录买入价格和止损价格
-                data = order.data
-                atr_value = data.atr[0] if hasattr(data.lines, 'atr') and data.atr[0] > 0 else self.atr[0] if hasattr(self, 'atr') else 0
-                
-                # 计算止损价格
-                stop_loss_price = order.executed.price - (atr_value * self.params.atr_stop_loss_multiplier)
-                
-                self.positions_info[order.data._name] = {
-                    'price': order.executed.price,
-                    'size': order.executed.size,
-                    'value': order.executed.value,
-                    'commission': order.executed.comm,
-                    'time': self.data.datetime.datetime(0),
-                    'stop_loss': stop_loss_price,  # 记录初始止损价格
-                    'highest_price': order.executed.price,  # 记录最高价格，用于跟踪止损
-                }
-                self.log(f'设置止损价格: {stop_loss_price:.2f}')
-            else:
-                self.log(f'卖出执行: 价格={order.executed.price:.2f}, 成本={order.executed.value:.2f}, 手续费={order.executed.comm:.2f}')
-                # 计算收益
-                if order.data._name in self.positions_info:
-                    buy_price = self.positions_info[order.data._name]['price']
-                    profit = (order.executed.price - buy_price) * order.executed.size
-                    self.log(f'收益: {profit:.2f}')
-                    # 清除持仓信息
-                    del self.positions_info[order.data._name]
-        
+            if self.order and self.order.ref == order.ref:
+                if order.isbuy():
+                    self.log(f'{current_date} - BUY EXECUTED - Ref: {order.ref}, Ticker: {ticker}, Price: {order.executed.price:.2f}, Cost: {order.executed.value:.2f}, Comm: {order.executed.comm:.2f}')
+                elif order.issell():
+                    self.log(f'{current_date} - SELL EXECUTED - Ref: {order.ref}, Ticker: {ticker}, Price: {order.executed.price:.2f}, Cost: {order.executed.value:.2f}, Comm: {order.executed.comm:.2f}')
+                self.order = None # Clear the completed order reference
+
         elif order.status in [order.Canceled, order.Margin, order.Rejected]:
-            self.log(f'订单取消/拒绝/保证金不足')
-        
-        # 移除订单
-        self.orders[order.data._name] = None
-    
+            if self.order and self.order.ref == order.ref:
+                self.log(f'{current_date} - Order {order.Status[order.status]} - Ref: {order.ref}, Ticker: {ticker}')
+                self.order = None # Clear the failed order reference
+
     def notify_trade(self, trade):
-        """交易结果通知"""
+        """交易状态通知"""
         if not trade.isclosed:
             return
+        ticker = trade.data._name
+        self.log(f'--- 交易结束 @ {ticker} ---')
+        self.log(f'  毛利润: {trade.pnl:.2f}')
+        self.log(f'  净利润: {trade.pnlcomm:.2f}')
+        self.log(f'-------------------------')
+
+
+    def calculate_position_size(self):
+        """根据风险和现金计算仓位大小"""
+        current_price = self.data.close[0]
+        total_value = self.broker.getvalue()
+        cash = self.broker.getcash()
         
-        self.log(f'交易利润: 毛利={trade.pnl:.2f}, 净利={trade.pnlcomm:.2f}')
-    
+        # 计算当前持仓数量 (需要改进以支持多品种)
+        # current_positions = sum(1 for pos in self.broker.positions if self.broker.positions[pos] and self.broker.getposition(self.broker.positions[pos]).size != 0)
+        # 简化处理：假设只交易一种资产或平均分配风险
+        current_positions = 1 if self.position else 0 # 简化：如果已有仓位则认为占用了1个，否则0个
+        remaining_slots = max(1, self.params.max_positions - current_positions) # 至少留1个槽位
+
+        # 1. 基于总资产风险计算
+        risk_per_position_value = total_value * self.params.risk_pct / self.params.max_positions
+        size_by_risk = int(risk_per_position_value / current_price) if current_price > 0 else 0
+        
+        # 2. 基于可用现金计算
+        cash_per_slot = (cash * 0.95) / remaining_slots # 预留5%现金
+        size_by_cash = int(cash_per_slot / current_price) if current_price > 0 else 0
+        
+        # 取两者最小值
+        final_size = max(0, min(size_by_risk, size_by_cash)) 
+        
+        self.log(f'Calculate Size: Price={current_price:.2f}, RiskSize={size_by_risk}, CashSize={size_by_cash} -> FinalSize={final_size}')
+        return final_size
+
     def next(self):
         """策略核心逻辑，每个交易日调用一次"""
-        
-        # 遍历所有数据源
         for i, data in enumerate(self.datas):
             ticker = data._name
+            current_date = data.datetime.date(0) # Use loop variable 'data'
+            current_close = data.close[0]       # Use loop variable 'data'
+            position_size = self.position.size
             
-            # 检查是否有未完成的订单
-            if self.orders.get(ticker, None):
-                continue
+            if self.order:
+                # 如果有挂单，不再执行新的交易逻辑
+                return
             
-            # 获取当前持仓
-            position = self.getposition(data)
-            
-            # 处理多头持仓
-            if position and position.size > 0:
-                current_price = data.close[0]
-                
-                # 更新持仓信息中的最高价格（用于跟踪止损）
-                if ticker in self.positions_info:
-                    if current_price > self.positions_info[ticker]['highest_price']:
-                        self.positions_info[ticker]['highest_price'] = current_price
-                    
-                    # 如果启用跟踪止损，动态调整止损价格
-                    if self.params.trailing_stop:
-                        initial_stop = self.positions_info[ticker]['stop_loss']
-                        entry_price = self.positions_info[ticker]['price']
-                        highest_price = self.positions_info[ticker]['highest_price']
-                        
-                        # 计算潜在的新止损价格（基于最高价格）
-                        atr_value = data.atr[0] if hasattr(data.lines, 'atr') and data.atr[0] > 0 else self.atr[0] if hasattr(self, 'atr') else 0
-                        trailing_distance = atr_value * self.params.atr_stop_loss_multiplier * self.params.trailing_percent
-                        potential_stop = highest_price - trailing_distance
-                        
-                        # 只有当新止损价格高于当前止损价格时才更新
-                        if potential_stop > self.positions_info[ticker]['stop_loss']:
-                            self.positions_info[ticker]['stop_loss'] = potential_stop
-                            self.log(f'调整止损价格: {ticker}, 新止损价={potential_stop:.2f}')
-                    
-                    # 检查是否触发止损
-                    stop_loss_price = self.positions_info[ticker]['stop_loss']
-                    
-                    # 如果价格低于止损价，执行止损
-                    if current_price <= stop_loss_price:
-                        self.log(f'止损触发: {ticker}, 当前价格={current_price:.2f}, 止损价={stop_loss_price:.2f}')
-                        self.orders[ticker] = self.sell(data=data, size=position.size)
-                        continue  # 已经执行了止损，跳过后续信号检查
-                
-                # 如果没有持仓信息但有long_stop_loss列，使用数据源中的止损价格
-                elif hasattr(data.lines, 'long_stop_loss') and data.long_stop_loss[0] > 0:
-                    stop_loss_price = data.long_stop_loss[0]
-                    
-                    # 如果价格低于止损价，执行止损
-                    if current_price <= stop_loss_price:
-                        self.log(f'数据源止损触发: {ticker}, 当前价格={current_price:.2f}, 止损价={stop_loss_price:.2f}')
-                        self.orders[ticker] = self.sell(data=data, size=position.size)
-                        continue  # 已经执行了止损，跳过后续信号检查
-            
-            # 处理空头持仓的止损条件
-            elif position and position.size < 0:
-                # 空头止损逻辑类似，但方向相反
-                # 这里简化处理，只使用数据源中的止损价格
-                if hasattr(data.lines, 'short_stop_loss') and data.short_stop_loss[0] > 0:
-                    current_price = data.close[0]
-                    stop_loss_price = data.short_stop_loss[0]
-                    
-                    # 如果价格高于止损价，执行止损
-                    if current_price >= stop_loss_price:
-                        self.log(f'空头止损触发: {ticker}, 当前价格={current_price:.2f}, 止损价={stop_loss_price:.2f}')
-                        self.orders[ticker] = self.buy(data=data, size=abs(position.size))
-                        continue  # 已经执行了止损，跳过后续信号检查
-            
-            # 使用自定义信号
             if self.params.use_custom_signals:
-                signal = self.data.signal[0]
+                # 使用来自数据源的自定义信号
+                signal = data.signal[0]         # Use loop variable 'data'
                 
-                # 买入信号
-                if signal == 1 and not position:
-                    # 计算买入数量
-                    price = data.close[0]
-                    cash = self.broker.getcash()
-                    risk_amount = cash * self.params.risk_pct
-                    size = int(risk_amount / price)
-                    
-                    if size > 0:
-                        self.log(f'买入信号: {ticker}, 价格={price:.2f}, 数量={size}')
-                        self.orders[ticker] = self.buy(data=data, size=size)
+                # --- 添加日志 --- 
+                self.log(f'{current_date} - Close: {current_close:.2f}, Signal: {signal}, Position: {position_size}')
+                # --------------- 
                 
-                # 卖出信号
-                elif signal == -1 and position:
-                    self.log(f'卖出信号: {ticker}, 价格={data.close[0]:.2f}, 数量={position.size}')
-                    self.orders[ticker] = self.sell(data=data, size=position.size)
-            
-            # 使用自定义指标计算信号
+                # 基于信号执行交易
+                if signal > 0:  # 买入信号 (1 或 0.5)
+                    if not self.position:  # 如果没有持仓
+                        # --- 添加日志 ---
+                        self.log(f'{current_date} - BUY SIGNAL DETECTED (Signal: {signal}), No current position. Placing Buy Order.')
+                        # ---------------
+                        size = self.calculate_position_size()
+                        if size > 0:
+                            self.log(f'BUY CREATE, {current_close:.2f}, Size: {size}')
+                            self.order = self.buy(size=size)
+                    else:
+                        # 如果已有持仓，根据信号强度决定是否加仓 (此处简化为不加仓)
+                        self.log(f'{current_date} - Buy Signal ({signal}) but already in position. Holding.')
+                        pass 
+
+                elif signal < 0:  # 卖出信号 (-1 或 -0.5)
+                    if self.position:  # 如果持有多头仓位
+                        # --- 添加日志 ---
+                        self.log(f'{current_date} - SELL SIGNAL DETECTED (Signal: {signal}), Current position exists. Placing Sell/Close Order.')
+                        # ---------------
+                        self.log(f'SELL CREATE (Close Position), {current_close:.2f}, Size: {self.position.size}')
+                        self.order = self.close() # 平掉所有多头仓位
+                    else:
+                        self.log(f'{current_date} - Sell Signal ({signal}) but no current position. Doing nothing.')
+                
+                # 可以在这里添加其他信号处理逻辑，例如 signal == 0 (无操作)
+                # else: # signal == 0 or other conditions
+                #     self.log(f'{current_date} - No trade signal (Signal: {signal}). Holding.')
+                
             else:
-                # 这里可以实现自定义的信号生成逻辑
-                # 例如：趋势策略 + 波段策略的融合
-                
-                # 趋势信号 (简化示例)
-                trend_signal = 0
-                if self.ma5[0] > self.ma20[0] and self.ma5[-1] <= self.ma20[-1]:
-                    trend_signal = 1  # 金叉买入
-                elif self.ma5[0] < self.ma20[0] and self.ma5[-1] >= self.ma20[-1]:
-                    trend_signal = -1  # 死叉卖出
-                
-                # 波段信号 (简化示例)
-                swing_signal = 0
-                if self.rsi[0] < 30 and self.rsi[-1] < self.rsi[0]:  # RSI 超卖反弹
-                    swing_signal = 1
-                elif self.rsi[0] > 70 and self.rsi[-1] > self.rsi[0]:  # RSI 超买回落
-                    swing_signal = -1
-                
-                # 判断市场状态
-                is_trend_market = self.adx[0] > self.params.adx_threshold
-                
-                # 根据市场状态调整权重
-                if is_trend_market:
-                    trend_weight = 0.8
-                    swing_weight = 0.2
-                else:
-                    trend_weight = 0.3
-                    swing_weight = 0.7
-                
-                # 融合信号
-                final_signal = trend_weight * trend_signal + swing_weight * swing_signal
-                
-                # 协同确认增强
-                if trend_signal == swing_signal and trend_signal != 0:
-                    final_signal *= self.params.confirmation_multiplier
-                
-                # 执行交易
-                if not position and final_signal > 0.5:  # 买入阈值
-                    # 计算买入数量
-                    price = data.close[0]
-                    cash = self.broker.getcash()
-                    risk_amount = cash * self.params.risk_pct
-                    size = int(risk_amount / price)
-                    
-                    if size > 0:
-                        self.log(f'买入信号: {ticker}, 价格={price:.2f}, 数量={size}')
-                        self.orders[ticker] = self.buy(data=data, size=size)
-                
-                elif position and final_signal < -0.5:  # 卖出阈值
-                    self.log(f'卖出信号: {ticker}, 价格={data.close[0]:.2f}, 数量={position.size}')
-                    self.orders[ticker] = self.sell(data=data, size=position.size)
+                # 使用策略内置的指标生成信号 (这部分逻辑已被简化或注释，因为当前重点是 use_custom_signals)
+                # ... (原有的基于指标的买卖逻辑，当前 focus 下可以暂时忽略) ...
+                pass
+
+
+    def stop(self):
+        """策略结束时调用"""
+        mode = "自定义信号" if self.params.use_custom_signals else "内置指标"
+        self.log(f'策略模式: {mode} | 运行结束。最终组合价值: {self.broker.getvalue():.2f}')
 
 
 # 回测引擎类
 class BTBacktestEngine:
     """基于 Backtrader 的回测引擎类"""
     
+    # Define custom lines statically here to avoid modification issues
+    _EXPECTED_CUSTOM_LINES = (
+        'volume_ma5', 'volume_ma10', 'ma5', 'ma10', 'ma20', 'ma60', 'ma120', 'ma250',
+        'rsi', 'kdj_k', 'kdj_d', 'kdj_j', 'macd', 'macd_signal', 'macd_hist',
+        'boll_upper', 'boll_middle', 'boll_lower', 'atr', 'adx', 'signal',
+        'long_stop_loss', 'short_stop_loss'
+    )
+
     def __init__(self, config_file):
         """
         初始化回测引擎
@@ -427,7 +365,7 @@ class BTBacktestEngine:
         self.cerebro.addanalyzer(btanalyzers.SQN, _name='sqn')
         self.cerebro.addanalyzer(btanalyzers.TimeReturn, _name='time_return', timeframe=bt.TimeFrame.Days)
     
-    def load_data(self, symbol):
+    def load_data(self, symbol, custom_lines):
         """
         从数据库加载历史数据并转换为 Backtrader 数据源
         
@@ -435,7 +373,9 @@ class BTBacktestEngine:
         ----------
         symbol : str
             交易品种代码
-            
+        custom_lines : tuple
+            A tuple containing the names of the custom lines expected by the PandasDataExtend class.
+        
         Returns
         -------
         backtrader.feeds.PandasData
@@ -477,59 +417,99 @@ class BTBacktestEngine:
             # 准备 Backtrader 数据源
             df.set_index('date', inplace=True)
             
-            # 确保列名与 PandasDataExtend 中定义的一致
-            column_mapping = {
-                'open': 'open',
-                'high': 'high',
-                'low': 'low',
-                'close': 'close',
-                'volume': 'volume',
-                'ma5': 'ma5',
-                'ma10': 'ma10',
-                'ma20': 'ma20',
-                'ma60': 'ma60',
-                'ma120': 'ma120',
-                'ma250': 'ma250',
-                'volume_ma5': 'volume_ma5',
-                'volume_ma10': 'volume_ma10',
-                'rsi': 'rsi',
-                'kdj_k': 'kdj_k',
-                'kdj_d': 'kdj_d',
-                'kdj_j': 'kdj_j',
-                'macd': 'macd',
-                'macd_signal': 'macd_signal',
-                'macd_hist': 'macd_hist',
-                'boll_upper': 'boll_upper',
-                'boll_middle': 'boll_middle',
-                'boll_lower': 'boll_lower',
-                'atr': 'atr',
-                'adx': 'adx',
-                'signal': 'signal',
-                'long_stop_loss': 'long_stop_loss',
-                'short_stop_loss': 'short_stop_loss'
+            # --- Revised Column Handling --- 
+            # 1. Ensure temporary SL columns exist (assuming bb_lower/upper exist)
+            if 'bb_lower' in df.columns and 'bb_upper' in df.columns:
+                df['_long_sl'] = df['bb_lower']
+                df['_short_sl'] = df['bb_upper']
+            else:
+                logger.warning(f"Columns 'bb_lower' or 'bb_upper' not found for {symbol}. Stop loss lines will be missing.")
+                # Create dummy columns if needed by lines definition
+                if 'long_stop_loss' in custom_lines:
+                    logger.warning(f"Column 'bb_lower' not found for {symbol}. Creating dummy 'long_stop_loss'.")
+                    df['_long_sl'] = float('nan')
+                if 'short_stop_loss' in custom_lines:
+                    logger.warning(f"Column 'bb_upper' not found for {symbol}. Creating dummy 'short_stop_loss'.") 
+                    df['_short_sl'] = float('nan')
+
+            # 2. Define ALL columns Backtrader expects (Standard + Custom Lines)
+            bt_standard_cols = ['open', 'high', 'low', 'close', 'volume']
+            
+            # Use the passed custom lines parameter
+            bt_custom_lines = list(custom_lines)
+ 
+            all_required_bt_cols = bt_standard_cols + bt_custom_lines
+            
+            # 3. Define mapping from SOURCE column names in df to TARGET BT names
+            #    Only include columns that NEED renaming or are custom lines.
+            #    Standard OHLCV are assumed to have correct names already.
+            rename_map = {
+                # Source Name in df : Target Name in all_required_bt_cols
+                'fusion_signal': 'signal', # Map the calculated signal
+                '_long_sl': 'long_stop_loss', # Map the temp SL column
+                '_short_sl': 'short_stop_loss',# Map the temp SL column
+                
+                # --- Add mappings for other custom lines if their names in df differ --- 
+                # Example: if df has 'rsi_14' but lines has 'rsi'
+                # 'rsi_14': 'rsi',
+                # Example: if df has 'bb_upper' but lines has 'boll_upper'
+                'bb_upper': 'boll_upper', 
+                'bb_middle': 'boll_middle',
+                'bb_lower': 'boll_lower', 
+                'ATR': 'atr', # Assuming df has 'ATR'
+                'ADX': 'adx', # Assuming df has 'ADX'
+                # Assuming volume_ma5, volume_ma10, ma5, ma10 etc. already exist with correct names
             }
             
-            # 重命名列
-            rename_dict = {}
-            for bt_col, df_col in column_mapping.items():
-                if df_col in df.columns:
-                    rename_dict[df_col] = bt_col
+            # 4. Identify source columns needed: Standard OHLCV + keys from rename_map + any custom lines NOT in rename_map
+            source_cols_to_select = list(bt_standard_cols) # Start with standard cols
+            source_cols_to_select.extend(rename_map.keys()) # Add source names that will be renamed
+            # Add custom lines whose names are already correct in df
+            for line in bt_custom_lines: # Iterate through custom lines expected by BT
+                # Check if this line name is NOT a target name in the rename map
+                if line not in rename_map.values() and line in df.columns:
+                    source_cols_to_select.append(line) # Add it to the list of source columns to select
             
-            df = df.rename(columns=rename_dict)
+            # Ensure unique columns and check if they exist in df
+            source_cols_to_select = list(dict.fromkeys(source_cols_to_select)) # Keep order, remove duplicates
+            missing_source_cols = [col for col in source_cols_to_select if col not in df.columns]
+            if missing_source_cols:
+                  # If a rename source is missing, remove it from map and selection
+                  cleaned_source_cols = []
+                  for col in source_cols_to_select:
+                      if col in df.columns:
+                          cleaned_source_cols.append(col)
+                      else:
+                          logger.warning(f"Required source column '{col}' not found in DataFrame for {symbol}. It will be excluded.")
+                          # Remove corresponding entry from rename_map if necessary
+                          keys_to_remove = [k for k, v in rename_map.items() if k == col]
+                          for k_rem in keys_to_remove: del rename_map[k_rem]
+                  source_cols_to_select = cleaned_source_cols
             
-            # 创建 Backtrader 数据源
+            # 5. Select only the necessary source columns
+            df_selected = df[source_cols_to_select]
+            
+            # 6. Rename the selected columns to match Backtrader's expectations
+            df_renamed = df_selected.rename(columns=rename_map)
+            
+            # 7. Reindex to ensure exact column set and order, filling missing with NaN
+            #    This guarantees the DataFrame structure matches PandasDataExtend
+            df_final = df_renamed.reindex(columns=all_required_bt_cols, fill_value=float('nan'))
+            print(f"DataFrame 列名: {df_final.columns.tolist()}")
+            print(f"DataFrame 前5行: \n{df_final.head()}")
+            # 创建 Backtrader 数据源 (使用 df_final)
             data = PandasDataExtend(
-                dataname=df,
-                name=symbol,
-                fromdate=datetime.strptime(self.start_date, '%Y-%m-%d'),
-                todate=datetime.strptime(self.end_date, '%Y-%m-%d'),
-                plot=True
+                dataname=df_final, # 使用整理好的 DataFrame
+                datetime=None,  # 使用索引
+                open='open', high='high', low='low', close='close', volume='volume', # 显式指定标准列以防万一
             )
-            
-            logger.info(f"成功从数据库加载 {symbol} 的历史数据，共 {len(df)} 条记录")
+            self.cerebro.adddata(data, name=symbol)
+            self.log(f'成功从数据库加载 {symbol} 的历史数据，共 {len(df_final)} 条记录')
             return data
         except Exception as e:
             logger.error(f"从数据库加载历史数据失败: {e}")
+            import traceback
+            traceback.print_exc()
             return None
     
     def run_backtest(self, symbols):
@@ -540,18 +520,26 @@ class BTBacktestEngine:
         ----------
         symbols : list
             交易品种代码列表
-            
+        
         Returns
         -------
         dict
             回测结果
+        
+        Notes
+        -----
+        1. 该函数会将交易品种代码列表中的每只 ETF 加载到 Backtrader 数据源中，并添加到 cerebro 实例中。
+        2. 然后，会将策略 FusionStrategyBT 添加到 cerebro 实例中，并将其参数从 self.strategy_config 中读取出来。
+        3. 接下来，会运行回测，并将回测结果保存到 self.results 中。
+        4. 最后，会将回测结果返回。
         """
+        
         logger.info(f"开始回测，交易品种: {symbols}")
         
         # 添加数据
         for symbol in symbols:
-            data = self.load_data(symbol)
-            if data:
+            data = self.load_data(symbol, self._EXPECTED_CUSTOM_LINES)
+            if data is not None:
                 self.cerebro.adddata(data)
         
         # 添加策略
@@ -740,7 +728,7 @@ def run_backtest(config_file, symbols=None, start_date=None, end_date=None, outp
         
         return results
     except Exception as e:
-        logger.error(f"运行回测失败: {e}")
+        logger.error(f"运行回测失败: {e}", exc_info=True)
         return {}
 
 
@@ -748,7 +736,7 @@ if __name__ == "__main__":
     # 设置日志
     logging.basicConfig(
         level=logging.INFO,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+        format='%(asctime)s - %(levelname)s - [%(filename)s:%(lineno)d] - %(message)s'
     )
     
     # 运行回测

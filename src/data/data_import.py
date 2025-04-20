@@ -16,7 +16,7 @@ from sqlalchemy.exc import SQLAlchemyError
 # 配置日志
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    format='%(asctime)s - %(levelname)s - [%(filename)s:%(lineno)d] - %(message)s',
     handlers=[
         logging.FileHandler("logs/data_import.log"),
         logging.StreamHandler(sys.stdout)

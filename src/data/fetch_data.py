@@ -37,7 +37,7 @@ os.makedirs(log_dir, exist_ok=True)
 
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    format='%(asctime)s - %(levelname)s - [%(filename)s:%(lineno)d] - %(message)s',
     handlers=[
         logging.FileHandler(os.path.join(log_dir, f"data_fetch_{datetime.now().strftime('%Y%m%d')}.log")),
         logging.StreamHandler()

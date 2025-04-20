@@ -3,7 +3,7 @@
 
 """
 波段策略模块
-实现多周期动量确认、通道回归均值、形态驱动反转、对冲型仓位平衡和量价微观验证等波段交易策略
+实现通道回归均值、形态驱动反转和对冲型仓位平衡等适用于日线周期的波段交易策略
 """
 
 import pandas as pd
@@ -34,73 +34,56 @@ class SwingStrategy:
         # 从配置中获取策略参数，如果没有则使用默认值
         swing_config = self.config.get("strategy", {}).get("swing", {})
 
-        # 多周期动量确认系统参数
+        # 形态驱动反转交易参数 - 适用于日线周期
         self.rsi_period = swing_config.get("rsi_period", 14)
-        self.rsi_oversold = swing_config.get("rsi_oversold", 40)  # 从35调整到40，适应ETF较低波动性
-        self.kdj_j_oversold = swing_config.get("kdj_j_oversold", 30)  # 从25调整到30，适应ETF较低波动性
-        self.macd_bars_increasing = swing_config.get("macd_bars_increasing", 2)  # 从3调整到2
-        self.double_bottom_volume_ratio = swing_config.get(
-            "double_bottom_volume_ratio", 1.2  # 从1.3调整到1.2
-        )
+        self.rsi_oversold = swing_config.get("rsi_oversold", 30)  # 从40调整到30，适应日线周期
+        self.kdj_j_oversold = swing_config.get("kdj_j_oversold", 20)  # 从30调整到20，适应日线周期
+        self.head_shoulder_volume_ratio = swing_config.get(
+            "head_shoulder_volume_ratio", 0.6
+        )  # 从0.5调整到0.6
+        self.head_shoulder_breakout_volume_ratio = swing_config.get(
+            "head_shoulder_breakout_volume_ratio", 1.5
+        )  # 从2.0调整到1.5
+        self.triangle_support_volume_ratio = swing_config.get(
+            "triangle_support_volume_ratio", 0.8
+        )  # 从0.7调整到0.8
+        self.flag_pole_min_rise = swing_config.get("flag_pole_min_rise", 0.05)  # 从0.08调整到0.05，适应日线周期
+        self.flag_max_retracement = swing_config.get("flag_max_retracement", 0.5)  # 从0.382调整到0.5
 
-        # 通道回归均值策略参数
+        # 通道回归均值策略参数 - 适用于日线周期
         self.bollinger_period = swing_config.get("bollinger_period", 20)
-        self.bollinger_std_dev = swing_config.get("bollinger_std_dev", 1.8)  # 从2.0调整到1.8，适应ETF较低波动性
-        self.bollinger_reversion_bars = swing_config.get("bollinger_reversion_bars", 3)
+        self.bollinger_std_dev = swing_config.get("bollinger_std_dev", 2.0)  # 从1.8调整到2.0，适应日线周期
+        self.bollinger_reversion_bars = swing_config.get("bollinger_reversion_bars", 5)  # 从3调整到5
         self.kdj_params = swing_config.get(
             "kdj_params", (9, 3, 3)
         )  # (K周期, D周期, J周期)
         self.atr_period = swing_config.get("atr_period", 14)
         self.atr_stop_loss_multiplier = swing_config.get(
-            "atr_stop_loss_multiplier", 1.2  # 从1.5调整到1.2，适应ETF较低波动性
-        )
-        # self.max_breakout_minutes = swing_config.get('max_breakout_minutes', 20) # 注释掉，因为未在代码中使用
+            "atr_stop_loss_multiplier", 2.0
+        )  # 从1.2调整到2.0，适应日线周期
 
-        # 形态驱动反转交易参数
-        self.head_shoulder_volume_ratio = swing_config.get(
-            "head_shoulder_volume_ratio", 0.5
-        )
-        self.head_shoulder_breakout_volume_ratio = swing_config.get(
-            "head_shoulder_breakout_volume_ratio", 2.0
-        )
-        self.triangle_support_volume_ratio = swing_config.get(
-            "triangle_support_volume_ratio", 0.7
-        )
-        self.flag_pole_min_rise = swing_config.get("flag_pole_min_rise", 0.08)  # 从0.15调整到0.08，适应ETF较低波动性
-        self.flag_max_retracement = swing_config.get("flag_max_retracement", 0.382)
-
-        # 对冲型仓位平衡参数
-        # self.ema_channel_period = swing_config.get("ema_channel_period", 144)
-        self.td_sequence_count = swing_config.get("td_sequence_count", 13)
+        # 对冲型仓位平衡参数 - 适用于日线和周线
+        self.td_sequence_count = swing_config.get("td_sequence_count", 9)  # 从13调整到9
         self.hedge_option_delta = swing_config.get(
             "hedge_option_delta", (0.3, 0.4)
         )  # (最小Delta, 最大Delta)
         self.hedge_position_ratio = swing_config.get(
-            "hedge_position_ratio", (0.1, 0.2)
-        )  # (最小比例, 最大比例)，从(0.15, 0.25)调整到(0.1, 0.2)
+            "hedge_position_ratio", (0.15, 0.25)
+        )  # (最小比例, 最大比例)，从(0.1, 0.2)调整到(0.15, 0.25)
         self.ema_channel_width = swing_config.get(
-            "ema_channel_width", 0.03
-        )  # EMA通道宽度，从0.05调整到0.03
+            "ema_channel_width", 0.05
+        )  # EMA通道宽度，从0.03调整到0.05
 
-        # 量价微观验证参数
-        self.vwap_volume_ratio = swing_config.get("vwap_volume_ratio", 1.2)
-        self.large_order_inflow_ratio = swing_config.get(
-            "large_order_inflow_ratio", 0.4
-        )
-        self.closing_auction_time = swing_config.get("closing_auction_time", "14:55")
-
-        # 信号组合权重
+        # 信号组合权重 - 移除不适用于日线的策略
         default_weights = {
-            "momentum_signal": 2.5,  # 多周期动量确认信号，从2.0提高到2.5
-            "bollinger_signal": 2.5,  # 通道回归均值信号，从2.0提高到2.5
-            "pattern_signal": 1.0,  # 形态驱动反转信号，从1.5降低到1.0
+            "bollinger_signal": 2.5,  # 通道回归均值信号
+            "pattern_signal": 1.5,  # 形态驱动反转信号，从1.0提高到1.5
             "hedge_signal": 1.0,  # 对冲型仓位平衡信号
-            "volume_price_signal": 0.0,  # 量价微观验证信号，从1.5降低到0.0
         }
         self.signal_weights = swing_config.get("signal_weights", default_weights)
         self.combined_signal_threshold = swing_config.get(
-            "combined_signal_threshold", 1.8
-        )  # 最终信号合并阈值，从2.0调整到1.8
+            "combined_signal_threshold", 2.0
+        )  # 最终信号合并阈值，从1.8调整到2.0
 
         logger.info(
             f"波段策略初始化完成，参数：RSI周期={self.rsi_period}, RSI超卖阈值={self.rsi_oversold}, "
@@ -108,178 +91,6 @@ class SwingStrategy:
             f"布林带标准差={self.bollinger_std_dev}, ATR周期={self.atr_period}, "
             f"ATR止损倍数={self.atr_stop_loss_multiplier}"
         )
-
-    def multi_timeframe_momentum_system(self, df_5min, df_15min, df_60min):
-        """
-        多周期动量确认系统
-
-        Parameters
-        ----------
-        df_5min : pandas.DataFrame
-            5分钟K线数据
-        df_15min : pandas.DataFrame
-            15分钟K线数据
-        df_60min : pandas.DataFrame
-            60分钟K线数据
-
-        Returns
-        -------
-        pandas.DataFrame
-            添加了多周期动量确认信号的数据框（基于5分钟K线）
-        """
-        if df_5min.empty or df_15min.empty or df_60min.empty:
-            logger.warning("输入的数据为空")
-            return df_5min
-
-        # 确保必要的列存在
-        required_cols = [
-            "date",
-            "close",
-            "open",
-            "high",
-            "low",
-            "volume",
-            "rsi_14",
-            "kdj_j",
-            "bb_lower",
-            "bb_middle",
-        ]
-        for df, timeframe in [
-            (df_5min, "5分钟"),
-            (df_15min, "15分钟"),
-            (df_60min, "60分钟"),
-        ]:
-            missing_cols = [col for col in required_cols if col not in df.columns]
-            if missing_cols:
-                logger.error(f"{timeframe}K线数据缺失必要的列: {missing_cols}")
-                return df_5min
-
-        logger.info("开始计算多周期动量确认系统信号")
-
-        # 复制数据，避免修改原始数据
-        result_df = df_5min.copy()
-
-        # 1. 短期动量：5分钟K线RSI（14周期）<30且KDJ-J线<20（超卖）+ 布林带下轨价格回归至中轨上方
-        result_df["short_term_oversold"] = (result_df["rsi_14"] < self.rsi_oversold) & (
-            result_df["kdj_j"] < self.kdj_j_oversold
-        )
-
-        # 布林带下轨价格回归至中轨上方
-        result_df["bb_lower_to_middle_cross"] = (
-            (result_df["close"] > result_df["bb_middle"])
-            & (result_df["close"].shift(1) <= result_df["bb_middle"].shift(1))
-            & (result_df["close"].shift(5) < result_df["bb_lower"].shift(5))
-        )
-
-        # 2. 中期过滤：15分钟K线需满足MACD柱线连续3根递增（防止短期假信号）
-        # 将15分钟MACD柱状线数据合并到5分钟数据
-        df_15min_copy = df_15min.copy()
-        df_15min_copy["date_rounded"] = df_15min_copy["date"].apply(
-            lambda x: x.replace(minute=(x.minute // 15) * 15, second=0, microsecond=0)
-        )
-
-        # 计算15分钟MACD柱状线是否连续递增
-        df_15min_copy["macd_hist_increasing"] = False
-        for i in range(self.macd_bars_increasing, len(df_15min_copy)):
-            increasing = True
-            for j in range(1, self.macd_bars_increasing):
-                if (
-                    df_15min_copy["macd_hist"].iloc[i - j]
-                    <= df_15min_copy["macd_hist"].iloc[i - j - 1]
-                ):
-                    increasing = False
-                    break
-            df_15min_copy.loc[df_15min_copy.index[i], "macd_hist_increasing"] = (
-                increasing
-            )
-
-        # 准备15分钟MACD数据用于合并
-        df_15min_macd = df_15min_copy[["date_rounded", "macd_hist_increasing"]].rename(
-            columns={"date_rounded": "date_15min"}
-        )
-
-        # 创建用于合并的辅助列
-        result_df["date_15min"] = result_df["date"].apply(
-            lambda x: x.replace(minute=(x.minute // 15) * 15, second=0, microsecond=0)
-        )
-
-        # 合并15分钟MACD数据
-        result_df = pd.merge(result_df, df_15min_macd, on="date_15min", how="left")
-
-        # 填充可能的缺失值
-        result_df["macd_hist_increasing"] = result_df["macd_hist_increasing"].fillna(
-            False
-        )
-
-        # 3. 执行逻辑：观察60分钟K线是否形成双底形态（第二个底不创新低）
-        # 将60分钟K线数据合并到5分钟数据
-        df_60min_copy = df_60min.copy()
-        df_60min_copy["date_rounded"] = df_60min_copy["date"].apply(
-            lambda x: x.replace(minute=0, second=0, microsecond=0)
-        )
-
-        # 识别60分钟K线的双底形态
-        df_60min_copy["is_bottom"] = (
-            df_60min_copy["low"] < df_60min_copy["low"].shift(1)
-        ) & (df_60min_copy["low"] < df_60min_copy["low"].shift(-1))
-
-        # 查找双底形态 - 向量化实现
-        df_60min_copy["double_bottom"] = False
-        
-        # 获取所有底部点的索引
-        bottom_indices = df_60min_copy.index[df_60min_copy["is_bottom"]].tolist()
-        
-        # 查找符合条件的双底形态
-        for i in range(len(bottom_indices) - 1):
-            right_bottom_idx = bottom_indices[i+1]
-            left_bottom_idx = bottom_indices[i]
-            
-            # 检查两个底之间的距离是否在10个周期内
-            if right_bottom_idx - left_bottom_idx > 10:
-                continue
-                
-            # 检查第二个底是否不创新低
-            if df_60min_copy.loc[right_bottom_idx, "low"] >= df_60min_copy.loc[left_bottom_idx, "low"]:
-                # 移除成交量检查，直接标记为双底
-                df_60min_copy.loc[right_bottom_idx, "double_bottom"] = True
-
-        # 准备60分钟双底数据用于合并
-        df_60min_bottom = df_60min_copy[["date_rounded", "double_bottom"]].rename(
-            columns={"date_rounded": "date_60min"}
-        )
-
-        # 创建用于合并的辅助列
-        result_df["date_60min"] = result_df["date"].apply(
-            lambda x: x.replace(minute=0, second=0, microsecond=0)
-        )
-
-        # 合并60分钟双底数据
-        result_df = pd.merge(result_df, df_60min_bottom, on="date_60min", how="left")
-
-        # 填充可能的缺失值
-        result_df["double_bottom"] = result_df["double_bottom"].fillna(False)
-
-        # 综合多周期动量确认信号
-        # 1 = 买入信号（短期超卖 + 布林带回归 + 15分钟MACD柱线递增 + 60分钟双底）
-        # 0 = 无信号
-
-        result_df["momentum_signal"] = 0
-        result_df.loc[
-            result_df["short_term_oversold"]
-            & result_df["bb_lower_to_middle_cross"]
-            & result_df["macd_hist_increasing"]
-            & result_df["double_bottom"],
-            "momentum_signal",
-        ] = 1
-
-        # 统计信号数量
-        buy_signals = (result_df["momentum_signal"] == 1).sum()
-        logger.info(f"多周期动量确认系统信号计算完成，买入信号: {buy_signals}个")
-
-        # 删除辅助列
-        result_df.drop(["date_15min", "date_60min"], axis=1, inplace=True)
-
-        return result_df
 
     def pattern_driven_reversal_strategy(self, df):
         """
@@ -715,86 +526,6 @@ class SwingStrategy:
         # 返回结果，包含 hedge_signal 和 hedge_ratio
         return result_df[["date", "hedge_signal", "hedge_ratio"]]
 
-    def volume_price_microvalidation(self, df, level2_data=None):
-        """
-        量价微观验证
-
-        Parameters
-        ----------
-        df : pandas.DataFrame
-            包含价格和成交量数据的数据框
-        level2_data : pandas.DataFrame, default None
-            Level2数据，包含主力资金流向信息
-
-        Returns
-        -------
-        pandas.DataFrame
-            添加了量价微观验证信号的数据框
-        """
-        if df.empty:
-            logger.warning("输入的数据为空")
-            return df
-
-        # 确保必要的列存在
-        required_cols = ["date", "close", "volume", "vwap"]
-        missing_cols = [col for col in required_cols if col not in df.columns]
-        if missing_cols:
-            logger.error(f"量价微观验证策略所需的列缺失: {missing_cols}")
-            return df
-
-        logger.info("开始计算量价微观验证信号")
-
-        # 复制数据，避免修改原始数据
-        result_df = df.copy()
-
-        # 1. 入场校验：价格突破时需满足成交量>当日VWAP的120% - 向量化实现
-        result_df["volume_gt_vwap"] = result_df["volume"] > (
-            result_df["vwap"] * self.vwap_volume_ratio
-        )
-
-        # 2. 主力资金流向监控（如果提供了Level2数据）- 向量化实现
-        if level2_data is not None and not level2_data.empty:
-            # 确保Level2数据包含必要的列
-            if all(
-                col in level2_data.columns
-                for col in ["date", "large_order_inflow_ratio"]
-            ):
-                # 合并Level2数据
-                level2_data_copy = level2_data[
-                    ["date", "large_order_inflow_ratio"]
-                ].copy()
-                result_df = pd.merge(result_df, level2_data_copy, on="date", how="left")
-
-                # 填充可能的缺失值
-                result_df["large_order_inflow_ratio"] = result_df[
-                    "large_order_inflow_ratio"
-                ].fillna(0)
-            else:
-                logger.warning("Level2数据缺少必要的列，无法监控主力资金流向")
-                result_df["large_order_inflow_ratio"] = 0
-        else:
-            logger.warning("未提供Level2数据，无法监控主力资金流向")
-            result_df["large_order_inflow_ratio"] = 0
-
-        # 3. 量价微观验证信号 - 向量化实现
-        # 1 = 买入信号（成交量>VWAP的120% + 主力资金净流入占比>40%）
-        # 0 = 无信号
-        result_df["volume_price_signal"] = 0
-        buy_condition = (result_df["volume_gt_vwap"]) & (result_df["large_order_inflow_ratio"] > self.large_order_inflow_ratio)
-        result_df.loc[buy_condition, "volume_price_signal"] = 1
-
-        # 4. 出场优化：设定14:55的尾盘集中成交算法（TWAP策略降低滑点）- 向量化实现
-        # 标记接近收盘时间的K线
-        result_df["closing_auction"] = result_df["date"].apply(
-            lambda x: x.strftime("%H:%M") == self.closing_auction_time
-        )
-
-        # 统计信号数量
-        buy_signals = (result_df["volume_price_signal"] == 1).sum()
-        logger.info(f"量价微观验证信号计算完成，买入信号: {buy_signals}个")
-
-        return result_df
-
     def channel_mean_reversion_strategy(self, df):
         """
         通道回归均值策略
@@ -816,7 +547,7 @@ class SwingStrategy:
         # 确保必要的列存在
         required_cols = [
             "date", "close", "open", "high", "low", "volume", 
-            "bb_upper", "bb_middle", "bb_lower", "kdj_k", "kdj_d", "kdj_j", "atr"
+            "bb_upper", "bb_middle", "bb_lower", "kdj_k", "kdj_d", "kdj_j", "atr_14"
         ]
         missing_cols = [col for col in required_cols if col not in df.columns]
         if missing_cols:
@@ -866,8 +597,8 @@ class SwingStrategy:
         
         # 3. ATR止损设置 - 仅计算止损价格，不执行止损逻辑
         # 计算ATR止损价格，供回测框架使用
-        result_df["long_stop_loss"] = result_df["close"] - (result_df["atr"] * self.atr_stop_loss_multiplier)
-        result_df["short_stop_loss"] = result_df["close"] + (result_df["atr"] * self.atr_stop_loss_multiplier)
+        result_df["long_stop_loss"] = result_df["close"] - (result_df["atr_14"] * self.atr_stop_loss_multiplier)
+        result_df["short_stop_loss"] = result_df["close"] + (result_df["atr_14"] * self.atr_stop_loss_multiplier)
         
         # 4. 平仓/止盈逻辑
         # 初始化平仓信号列
@@ -933,49 +664,33 @@ class SwingStrategy:
         
         return result_df
 
-    def combine_signals(self, df_5min, df_15min, df_60min, weekly_df=None, level2_data=None):
+    def combine_signals(self, df, weekly_df=None):
         """
         组合各策略信号，通过调用各个策略方法生成信号并合并
 
         Parameters
         ----------
-        df_5min : pandas.DataFrame
-            5分钟K线数据，包含基础指标
-        df_15min : pandas.DataFrame
-            15分钟K线数据，包含基础指标
-        df_60min : pandas.DataFrame
-            60分钟K线数据，包含基础指标
+        df : pandas.DataFrame
+            日线K线数据，包含基础指标
         weekly_df : pandas.DataFrame, default None
             周线数据，用于对冲策略
-        level2_data : pandas.DataFrame, default None
-            Level2数据，用于量价验证
 
         Returns
         -------
         pandas.DataFrame
-            添加了综合信号的数据框（基于5分钟K线）
+            添加了综合信号的数据框
         """
-        if df_5min.empty:
-            logger.warning("输入的5分钟K线数据为空")
-            return df_5min
+        if df.empty:
+            logger.warning("输入的日线K线数据为空")
+            return df
 
         logger.info("开始组合各策略信号")
 
-        # 基础数据框使用5分钟K线
-        combined_df = df_5min.copy()
+        # 基础数据框使用日线K线
+        combined_df = df.copy()
 
         # --- Call Individual Strategies --- 
-        # 1. Multi-Timeframe Momentum
-        momentum_df = self.multi_timeframe_momentum_system(df_5min, df_15min, df_60min)
-        if not momentum_df.empty and 'momentum_signal' in momentum_df.columns:
-            combined_df = pd.merge(combined_df, momentum_df[['date', 'momentum_signal']], on='date', how='left')
-            combined_df['momentum_signal'] = combined_df['momentum_signal'].fillna(0)
-        else:
-            logger.warning("多周期动量信号计算失败或未返回信号列，填充为0")
-            combined_df['momentum_signal'] = 0
-
-        # 2. Channel Mean Reversion
-        # Call the strategy
+        # 1. Channel Mean Reversion
         channel_df = self.channel_mean_reversion_strategy(combined_df) # Assuming it now returns bollinger_signal, exit_signal, etc.
 
         # Define the columns we expect from this strategy
@@ -1016,7 +731,7 @@ class SwingStrategy:
             for col in ['long_stop_loss', 'short_stop_loss']:
                 if col not in combined_df.columns: combined_df[col] = np.nan
 
-        # 3. Pattern Driven Reversal
+        # 2. Pattern Driven Reversal
         pattern_df = self.pattern_driven_reversal_strategy(combined_df) # Pass the potentially modified combined_df
         if not pattern_df.empty and 'pattern_signal' in pattern_df.columns:
              # Merge pattern_signal back, avoiding column duplication if pattern_df is combined_df
@@ -1029,7 +744,7 @@ class SwingStrategy:
             logger.warning("形态驱动反转信号计算失败或未返回信号列，填充为0")
             combined_df['pattern_signal'] = 0
 
-        # 4. Hedge Position Balance
+        # 3. Hedge Position Balance
         # Pass the latest combined_df and weekly_df
         hedge_df = self.hedge_position_balance(combined_df, weekly_df) 
         if not hedge_df.empty and 'hedge_signal' in hedge_df.columns:
@@ -1053,43 +768,24 @@ class SwingStrategy:
             combined_df['hedge_signal'] = 0
             combined_df['hedge_ratio'] = 0 # If signal fails, ratio is also 0
 
-        # # 5. Volume Price Microvalidation
-        # # Pass the latest combined_df and level2_data
-        # volume_price_df = self.volume_price_microvalidation(combined_df, level2_data) 
-        # if not volume_price_df.empty and 'volume_price_signal' in volume_price_df.columns:
-        #      # Merge back into combined_df, handle potential existing column
-        #     if 'volume_price_signal' in combined_df.columns:
-        #          combined_df['volume_price_signal'] = volume_price_df['volume_price_signal']
-        #     else:
-        #         combined_df = pd.merge(combined_df, volume_price_df[['date', 'volume_price_signal']], on='date', how='left')
-        #     combined_df['volume_price_signal'] = combined_df['volume_price_signal'].fillna(0)
-        # else:
-        #     logger.warning("量价微观验证信号计算失败或未返回信号列，填充为0")
-        #     combined_df['volume_price_signal'] = 0
-
-        # 由于量价微观验证逻辑不适用于ETF，直接将volume_price_signal设为0
-        combined_df['volume_price_signal'] = 0
-        
         # 计算加权信号
         combined_df["weighted_signal"] = (
-            combined_df["momentum_signal"] * self.signal_weights["momentum_signal"]
-            + combined_df["bollinger_signal"] * self.signal_weights["bollinger_signal"]
+            combined_df["bollinger_signal"] * self.signal_weights["bollinger_signal"]
             + combined_df["pattern_signal"] * self.signal_weights["pattern_signal"]
             + combined_df["hedge_signal"] * self.signal_weights["hedge_signal"]
-            + combined_df["volume_price_signal"] * self.signal_weights["volume_price_signal"]
         )
 
         # --- Signal Filtering and Final Decision ---
         logger.info("生成最终信号，优先处理平仓信号")
-        combined_df["combined_signal"] = 0 # Initialize with 0 (no action)
+        combined_df["final_signal"] = 0 # Initialize with 0 (no action)
 
         # 1. Check for Exit Signals first (Priority)
         # Use .loc for potentially faster setting on large dataframes
         long_exit_mask = combined_df["exit_signal"] == 2
         short_exit_mask = combined_df["exit_signal"] == -2
 
-        combined_df.loc[long_exit_mask, "combined_signal"] = 2   # 平多仓
-        combined_df.loc[short_exit_mask, "combined_signal"] = -2  # 平空仓
+        combined_df.loc[long_exit_mask, "final_signal"] = 2   # 平多仓
+        combined_df.loc[short_exit_mask, "final_signal"] = -2  # 平空仓
 
         # 2. If no exit signal, check for Entry Signals
         # Mask for rows where no exit signal was triggered
@@ -1097,19 +793,19 @@ class SwingStrategy:
 
         # a) Check for Buy Signal (weighted sum threshold)
         buy_condition = (combined_df["weighted_signal"] > self.combined_signal_threshold) & no_exit_mask
-        combined_df.loc[buy_condition, "combined_signal"] = 1   # 开多仓
+        combined_df.loc[buy_condition, "final_signal"] = 1   # 开多仓
 
         # b) Check for Sell/Hedge Signal (specific hedge signal, overrides weighted if needed)
         # Apply only where no exit and no buy signal was set
         sell_condition = (combined_df["hedge_signal"] == -1) & no_exit_mask # & ~buy_condition (implicitly handled by applying after buy)
-        # We only set sell signal if combined_signal is still 0 at this point after checking exits and buy
-        combined_df.loc[sell_condition & (combined_df["combined_signal"] == 0), "combined_signal"] = -1 # 开空仓/对冲
+        # We only set sell signal if final_signal is still 0 at this point after checking exits and buy
+        combined_df.loc[sell_condition & (combined_df["final_signal"] == 0), "final_signal"] = -1 # 开空仓/对冲
 
         # 统计最终信号
-        final_buy_entry_signals = (combined_df["combined_signal"] == 1).sum()
-        final_sell_entry_signals = (combined_df["combined_signal"] == -1).sum()
-        final_long_exit_signals = (combined_df["combined_signal"] == 2).sum()
-        final_short_exit_signals = (combined_df["combined_signal"] == -2).sum()
+        final_buy_entry_signals = (combined_df["final_signal"] == 1).sum()
+        final_sell_entry_signals = (combined_df["final_signal"] == -1).sum()
+        final_long_exit_signals = (combined_df["final_signal"] == 2).sum()
+        final_short_exit_signals = (combined_df["final_signal"] == -2).sum()
 
         logger.info(f"最终信号统计: 开多={final_buy_entry_signals}, 开空={final_sell_entry_signals}, 平多={final_long_exit_signals}, 平空={final_short_exit_signals}")
 

@@ -26,7 +26,11 @@ from src.utils.db_utils import get_db_engine, load_config
 # 设置日志
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    format='%(asctime)s - %(levelname)s - [%(filename)s:%(lineno)d] - %(message)s',
+    handlers=[
+        logging.FileHandler("db_write_test.log"),
+        logging.StreamHandler()
+    ]
 )
 logger = logging.getLogger(__name__)
 
@@ -214,8 +218,8 @@ class DBWriteTest:
         
         # 汇总测试结果
         results = {
-            "ETF列表写入": etf_list_result,
-            "ETF指标数据写入": etf_indicators_result,
+            "ETF列表写入": False,
+            "ETF指标数据写入": False,
             "市场情绪数据写入": market_sentiment_result,
             "行业资金流向数据写入": fund_flow_result
         }

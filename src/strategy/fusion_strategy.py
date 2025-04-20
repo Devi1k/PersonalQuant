@@ -231,49 +231,50 @@ class FusionStrategy:
         start_date = df['trade_date'].min().strftime('%Y-%m-%d') if 'trade_date' in df.columns else None
         end_date = df['trade_date'].max().strftime('%Y-%m-%d') if 'trade_date' in df.columns else None
         
-        if etf_code and start_date and end_date:
-            # 导入数据库工具
-            from src.utils.db_utils import get_db_engine, query_minute_kline_data
+        # if etf_code and start_date and end_date:
+        #     # 导入数据库工具
+        #     from src.utils.db_utils import get_db_engine, query_minute_kline_data
             
-            # 获取数据库引擎
-            engine = get_db_engine()
+        #     # 获取数据库引擎
+        #     engine = get_db_engine()
             
-            if engine:
-                # 查询5分钟K线数据
-                df_5min = query_minute_kline_data(
-                    engine=engine,
-                    etf_code=etf_code,
-                    period=5,
-                    start_date=start_date,
-                    end_date=end_date
-                )
+        #     # TODO： 不再查询分钟k
+        #     if engine:
+        #         # 查询5分钟K线数据
+        #         df_5min = query_minute_kline_data(
+        #             engine=engine,
+        #             etf_code=etf_code,
+        #             period=5,
+        #             start_date=start_date,
+        #             end_date=end_date
+        #         )
                 
-                # 查询15分钟K线数据
-                df_15min = query_minute_kline_data(
-                    engine=engine,
-                    etf_code=etf_code,
-                    period=15,
-                    start_date=start_date,
-                    end_date=end_date
-                )
+        #         # 查询15分钟K线数据
+        #         df_15min = query_minute_kline_data(
+        #             engine=engine,
+        #             etf_code=etf_code,
+        #             period=15,
+        #             start_date=start_date,
+        #             end_date=end_date
+        #         )
                 
-                # 查询60分钟K线数据
-                df_60min = query_minute_kline_data(
-                    engine=engine,
-                    etf_code=etf_code,
-                    period=60,
-                    start_date=start_date,
-                    end_date=end_date
-                )
+        #         # 查询60分钟K线数据
+        #         df_60min = query_minute_kline_data(
+        #             engine=engine,
+        #             etf_code=etf_code,
+        #             period=60,
+        #             start_date=start_date,
+        #             end_date=end_date
+        #         )
                 
-                logger.info(f"成功获取ETF {etf_code} 的分钟级别K线数据：5分钟({len(df_5min)}条)，15分钟({len(df_15min)}条)，60分钟({len(df_60min)}条)")
-            else:
-                logger.warning("数据库引擎创建失败，无法获取分钟级别K线数据")
-        else:
-            logger.warning(f"缺少必要的数据：etf_code={etf_code}, start_date={start_date}, end_date={end_date}，无法获取分钟级别K线数据")
+        #         logger.info(f"成功获取ETF {etf_code} 的分钟级别K线数据：5分钟({len(df_5min)}条)，15分钟({len(df_15min)}条)，60分钟({len(df_60min)}条)")
+        #     else:
+        #         logger.warning("数据库引擎创建失败，无法获取分钟级别K线数据")
+        # else:
+        #     logger.warning(f"缺少必要的数据：etf_code={etf_code}, start_date={start_date}, end_date={end_date}，无法获取分钟级别K线数据")
         
         # 运行波段策略
-        swing_df = self.swing_strategy.combine_signals(df_5min, df_15min, df_60min, weekly_df)
+        swing_df = self.swing_strategy.combine_signals(df, weekly_df)
 
         # 融合信号
         combined_df = df.copy()

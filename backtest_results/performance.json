@@ -1,0 +1,18 @@
+{
+    "initial_capital": 1000000,
+    "final_value": 999474.19169633,
+    "total_return": -0.052580830366999454,
+    "annual_return": -5.42212978693529e-05,
+    "sharpe_ratio": -45.93796581111884,
+    "max_drawdown": 11.822541531127296,
+    "max_drawdown_length": 720,
+    "sqn": -0.5392070288058131,
+    "trade_count": 28,
+    "win_count": 9,
+    "loss_count": 19,
+    "win_rate": 32.142857142857146,
+    "avg_trade_pnl": 0,
+    "max_trade_pnl": 0,
+    "min_trade_pnl": 0,
+    "avg_trade_length": 15.0
+}
