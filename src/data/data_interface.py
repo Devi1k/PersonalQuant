@@ -503,35 +503,35 @@ class DataInterface:
                 return kline_df, None
         
         # 获取最新数据
-        logger.info(f"从AKShare获取ETF {code} 的 {period} 分钟K线数据...")
-        kline_df = self.data_fetcher.get_etf_minute_kline(
-            code=code,
-            period=period,
-            start_date=start_date,
-            end_date=end_date
-        )
+        # logger.info(f"从AKShare获取ETF {code} 的 {period} 分钟K线数据...")
+        # kline_df = self.data_fetcher.get_etf_minute_kline(
+        #     code=code,
+        #     period=period,
+        #     start_date=start_date,
+        #     end_date=end_date
+        # )
         
-        if kline_df.empty:
-            logger.warning(f"未能获取到ETF {code} 的 {period} 分钟K线数据")
-            return pd.DataFrame(), pd.DataFrame()
+        # if kline_df.empty:
+        #     logger.warning(f"未能获取到ETF {code} 的 {period} 分钟K线数据")
+        #     return pd.DataFrame(), pd.DataFrame()
         
         # 处理数据
-        logger.info(f"处理ETF {code} 的 {period} 分钟K线数据...")
-        processed_kline_df = self.data_processor.process_minute_kline(kline_df)
+        # logger.info(f"处理ETF {code} 的 {period} 分钟K线数据...")
+        # processed_kline_df = self.data_processor.process_minute_kline(kline_df)
         
-        # 更新K线数据缓存
-        self._minute_kline_cache[cache_key] = processed_kline_df
+        # # 更新K线数据缓存
+        # self._minute_kline_cache[cache_key] = processed_kline_df
         
         # 计算技术指标
-        indicators_df = None
-        if with_indicators:
-            logger.info(f"计算ETF {code} 的 {period} 分钟K线技术指标...")
-            indicators_df = self.data_processor.calculate_minute_indicators(processed_kline_df)
+        # indicators_df = None
+        # if with_indicators:
+        #     logger.info(f"计算ETF {code} 的 {period} 分钟K线技术指标...")
+        #     indicators_df = self.data_processor.calculate_minute_indicators(processed_kline_df)
             
-            # 更新指标数据缓存
-            self._minute_indicators_cache[cache_key] = indicators_df
+        #     # 更新指标数据缓存
+        #     self._minute_indicators_cache[cache_key] = indicators_df
         
-        return processed_kline_df, indicators_df
+        return pd.DataFrame(), pd.DataFrame()
     
     def update_minute_data(self, etf_codes, periods=None, start_date=None, end_date=None):
         """
@@ -656,21 +656,21 @@ class DataInterface:
                     minute_code = code
                 
                 # 获取5分钟、15分钟和60分钟K线数据
-                for period in [5, 15, 60]:
-                    kline_df, indicators_df = self.get_etf_minute_kline(
-                        code=minute_code,
-                        period=period,
-                        start_date=minute_start_date,
-                        end_date=minute_end_date,
-                        use_cache=False,
-                        force_update=True
-                    )
+                # for period in [5, 15, 60]:
+                #     kline_df, indicators_df = self.get_etf_minute_kline(
+                #         code=minute_code,
+                #         period=period,
+                #         start_date=minute_start_date,
+                #         end_date=minute_end_date,
+                #         use_cache=False,
+                #         force_update=True
+                #     )
                     
-                    if not kline_df.empty:
-                        minute_kline_count += len(kline_df)
+                #     if not kline_df.empty:
+                #         minute_kline_count += len(kline_df)
                     
-                    if indicators_df is not None and not indicators_df.empty:
-                        minute_indicators_count += len(indicators_df)
+                #     if indicators_df is not None and not indicators_df.empty:
+                #         minute_indicators_count += len(indicators_df)
         
         result["etf_history"] = etf_count
         result["minute_kline"] = minute_kline_count
@@ -686,21 +686,21 @@ class DataInterface:
                 index_count += 1
                 
             # 获取指数的分钟线数据
-            for period in [5, 15, 60]:
-                kline_df, indicators_df = self.get_etf_minute_kline(
-                    code=code,
-                    period=period,
-                    start_date=minute_start_date,
-                    end_date=minute_end_date,
-                    use_cache=False,
-                    force_update=True
-                )
+            # for period in [5, 15, 60]:
+            #     kline_df, indicators_df = self.get_etf_minute_kline(
+            #         code=code,
+            #         period=period,
+            #         start_date=minute_start_date,
+            #         end_date=minute_end_date,
+            #         use_cache=False,
+            #         force_update=True
+            #     )
                 
-                if not kline_df.empty:
-                    minute_kline_count += len(kline_df)
+            #     if not kline_df.empty:
+            #         minute_kline_count += len(kline_df)
                 
-                if indicators_df is not None and not indicators_df.empty:
-                    minute_indicators_count += len(indicators_df)
+            #     if indicators_df is not None and not indicators_df.empty:
+            #         minute_indicators_count += len(indicators_df)
                     
         result["index_history"] = index_count
         # 更新分钟线数据计数

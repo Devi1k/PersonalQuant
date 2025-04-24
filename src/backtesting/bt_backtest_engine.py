@@ -746,8 +746,8 @@ if __name__ == "__main__":
     results = run_backtest(
         config_file=config_file,
         symbols=symbols,
-        start_date='2020-01-01',
-        end_date='2023-12-31',
+        start_date='2018-01-01',
+        end_date='2024-12-31',
         output_dir='backtest_results'
     )
     
