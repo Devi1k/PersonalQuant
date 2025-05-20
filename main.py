@@ -14,6 +14,7 @@ from datetime import datetime
 # 设置日志
 logging.basicConfig(
     level=logging.INFO,
+    encoding="utf-8",
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
         logging.FileHandler(f"logs/quant_{datetime.now().strftime('%Y%m%d')}.log"),
