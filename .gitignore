@@ -64,3 +64,5 @@ coverage.xml
 
 # data
 *.csv
+
+*.DS_Store
