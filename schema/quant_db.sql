@@ -65,6 +65,10 @@ CREATE TABLE IF NOT EXISTS etf_indicators (
     obv BIGINT COMMENT 'OBV指标',
     volume_ma_5 BIGINT COMMENT '成交量5日均线',
     vwap_20 DECIMAL(10, 2) COMMENT '20日成交量加权平均价格',
+    mfi_3 DECIMAL(10, 4) COMMENT '3日资金流量指标',
+    mfi_5 DECIMAL(10, 4) COMMENT '5日资金流量指标',
+    mfi_7 DECIMAL(10, 4) COMMENT '7日资金流量指标',
+    mfi_14 DECIMAL(10, 4) COMMENT '14日资金流量指标',
     PRIMARY KEY (id, trade_date),
     UNIQUE KEY uk_etf_date (etf_code, trade_date),
     INDEX idx_trade_date (trade_date)
@@ -249,6 +253,38 @@ GROUP BY ms.trade_date, ms.up_limit_count, ms.down_limit_count, ms.up_down_ratio
 -- 
 -- 优化查询缓存:
 -- SET GLOBAL query_cache_size = 64M;
+
+-- 创建板块指数与统计信息表
+CREATE TABLE IF NOT EXISTS sector_data (
+    id INT NOT NULL AUTO_INCREMENT COMMENT '自增ID',
+    sector_id VARCHAR(20) NOT NULL COMMENT '板块ID',
+    sector_name VARCHAR(50) NOT NULL COMMENT '板块名称',
+    trade_date DATE NOT NULL COMMENT '交易日期',
+    -- 指数数据部分
+    index_value DECIMAL(10, 2) COMMENT '指数值',
+    change_pct_1d DECIMAL(10, 4) COMMENT '1日涨跌幅',
+    change_pct_5d DECIMAL(10, 4) COMMENT '5日涨跌幅',
+    change_pct_10d DECIMAL(10, 4) COMMENT '10日涨跌幅',
+    -- 统计信息部分
+    up_limit_count INT COMMENT '涨停家数',
+    down_limit_count INT COMMENT '跌停家数',
+    up_down_ratio DECIMAL(10, 4) COMMENT '涨跌比',
+    volume BIGINT COMMENT '成交量',
+    amount DECIMAL(20, 2) COMMENT '成交额',
+    PRIMARY KEY (id, trade_date),
+    UNIQUE KEY uk_sector_date (sector_id, trade_date),
+    INDEX idx_trade_date (trade_date),
+    INDEX idx_sector_name (sector_name)
+) ENGINE=InnoDB COMMENT='板块指数与统计信息表'
+PARTITION BY RANGE (YEAR(trade_date)) (
+    PARTITION p2020 VALUES LESS THAN (2021),
+    PARTITION p2021 VALUES LESS THAN (2022),
+    PARTITION p2022 VALUES LESS THAN (2023),
+    PARTITION p2023 VALUES LESS THAN (2024),
+    PARTITION p2024 VALUES LESS THAN (2025),
+    PARTITION p2025 VALUES LESS THAN (2026),
+    PARTITION p_max VALUES LESS THAN MAXVALUE
+);
 -- SET GLOBAL query_cache_type = 1;
 
 -- 创建数据导入存储过程
