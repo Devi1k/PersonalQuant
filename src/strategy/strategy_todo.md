@@ -1,12 +1,16 @@
 # 量化交易策略实现 Todo List
 
+核心工作流：逐个板块检查龙头股、板块涨幅、资金流入等 确定行业，根据行业选择ETF，然后决定买点、卖点
+
 ## 1. 数据获取与预处理模块
 
-- [x] **创建行业/板块指数数据获取功能**
-    - [x] 获取主要行业指数数据
-    - [x] 获取主要概念板块指数数据
-- [ ] **开发ETF-板块关联数据管理功能**
-    - [ ] 记录ETF代码与所属行业板块ID的关联：调用fund_portfolio_hold_em获取 ETF 持仓前十，并调用 stock_individual_info_em 获取行业，取行业最多的作为ETF所属行业
+- [x] 在 etf_list 表中新建 etf_industry 字段，用于存储 ETF 所属行业（是否需要和 industry_fund_flow ）
+
+- [] **创建行业以及 ETF 指数数据获取功能**
+    - [] 获取主要行业数据
+    - [] 获取主要 ETF 指数数据
+- [ ] **开发ETF-行业板块关联数据管理功能**
+    - [ ] 记录ETF代码与所属行业板块ID的关联：调用 fund_portfolio_hold_em 获取 ETF 持仓前十，并调用 stock_individual_info_em 获取持仓个股的行业，取行业最多的作为ETF所属行业，写入 etf_list 表
 
 
 ## 2. 强势题材识别模块 (宏观与中观层面)
