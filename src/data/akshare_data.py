@@ -58,6 +58,17 @@ class AKShareData:
     def get_etf_list(self, save=True):
         """
         获取所有ETF基金列表并写入数据库
+        
+        获取ETF列表，并通过分析ETF持仓前十的股票所属行业，确定ETF所属行业
+        行业判断逻辑：
+        1. 获取ETF持仓前十股票
+        2. 查询每只股票所属行业
+        3. 统计行业出现频率，取频率最高的行业作为ETF所属行业
+        
+        Returns
+        -------
+        pandas.DataFrame
+            包含ETF基金列表的DataFrame，增加了etf_industry字段
         """
         logger.info("开始获取ETF基金列表...")
         if not self.engine and save:
@@ -100,6 +111,92 @@ class AKShareData:
             # if "volume" in etf_df.columns:
             #     etf_df["volume"] = pd.to_numeric(etf_df["volume"], errors='coerce') * 100
 
+            # 添加ETF行业映射
+            logger.info("开始获取ETF行业映射信息...")
+            etf_df["etf_industry"] = None  # 初始化行业列
+            
+            # 为避免频繁请求API导致被限制，随机选择部分ETF进行行业映射（如果之前没有映射过）
+            # 或者可以考虑使用已有的映射数据，只为新增的ETF添加映射
+            if self.engine:
+                try:
+                    # 获取已有的ETF行业映射
+                    existing_etf_industry = pd.read_sql(
+                        "SELECT code, etf_industry FROM etf_list WHERE etf_industry IS NOT NULL",
+                        self.engine
+                    )
+                    # 将已有的映射合并到当前数据中
+                    if not existing_etf_industry.empty:
+                        etf_df = etf_df.merge(
+                            existing_etf_industry, on="code", how="left", suffixes=("", "_existing")
+                        )
+                        # 使用已有的行业映射填充
+                        mask = etf_df["etf_industry"].isna() & etf_df["etf_industry_existing"].notna()
+                        etf_df.loc[mask, "etf_industry"] = etf_df.loc[mask, "etf_industry_existing"]
+                        etf_df.drop(columns=["etf_industry_existing"], inplace=True)
+                        logger.info(f"已从数据库加载 {mask.sum()} 个ETF的行业映射")
+                except Exception as e:
+                    logger.warning(f"获取已有ETF行业映射失败: {e}")
+            
+            # 获取未映射行业的ETF代码
+            unmapped_etfs = etf_df[etf_df["etf_industry"].isna()].copy()
+            
+            # 如果未映射的ETF数量较多，可以限制每次处理的数量
+            max_process_count = 10  # 每次最多处理10个ETF
+            if len(unmapped_etfs) > max_process_count:
+                unmapped_etfs = unmapped_etfs.sample(max_process_count)
+                logger.info(f"本次将为 {max_process_count} 个ETF添加行业映射")
+            
+            # 为未映射的ETF添加行业信息
+            for idx, row in unmapped_etfs.iterrows():
+                etf_code = row["code"]
+                try:
+                    # 1. 获取ETF持仓前十
+                    logger.debug(f"获取ETF {etf_code} ({row['name']}) 的持仓信息")
+                    try:
+                        # 使用fund_portfolio_hold_em获取ETF持仓
+                        # 参数格式可能需要调整，根据实际API要求
+                        holdings_df = ak.fund_portfolio_hold_em(fund=etf_code)
+                        if holdings_df.empty:
+                            logger.warning(f"ETF {etf_code} ({row['name']}) 无持仓数据")
+                            continue
+                    except Exception as e:
+                        logger.warning(f"获取ETF {etf_code} ({row['name']}) 持仓失败: {e}")
+                        continue
+                    
+                    # 2. 获取持仓股票的行业信息
+                    industries = []
+                    # 假设持仓数据中股票代码列名为'stock_code'，可能需要根据实际返回调整
+                    stock_code_col = [col for col in holdings_df.columns if '代码' in col or 'code' in col.lower()]
+                    if not stock_code_col:
+                        logger.warning(f"ETF {etf_code} 持仓数据中未找到股票代码列")
+                        continue
+                    
+                    stock_code_col = stock_code_col[0]
+                    for _, holding in holdings_df.iterrows():
+                        stock_code = holding[stock_code_col]
+                        try:
+                            # 获取个股行业信息
+                            stock_info = ak.stock_individual_info_em(symbol=stock_code)
+                            # 假设行业信息在返回的DataFrame中的'industry'列
+                            industry_col = [col for col in stock_info.columns if '所属行业' in col or 'industry' in col.lower()]
+                            if industry_col:
+                                industry = stock_info.iloc[0][industry_col[0]]
+                                if industry and isinstance(industry, str):
+                                    industries.append(industry)
+                        except Exception as e:
+                            logger.debug(f"获取股票 {stock_code} 行业信息失败: {e}")
+                    
+                    # 3. 统计最常见的行业
+                    if industries:
+                        from collections import Counter
+                        industry_counter = Counter(industries)
+                        most_common_industry = industry_counter.most_common(1)[0][0]
+                        # 更新ETF的行业信息
+                        etf_df.loc[etf_df["code"] == etf_code, "etf_industry"] = most_common_industry
+                        logger.info(f"ETF {etf_code} ({row['name']}) 行业确定为: {most_common_industry}")
+                except Exception as e:
+                    logger.warning(f"处理ETF {etf_code} ({row['name']}) 行业映射时出错: {e}")
+            
             # 添加获取日期作为更新日期
             etf_df["update_date"] = datetime.now().date()  # 使用 date() 获取日期部分
 
@@ -107,6 +204,7 @@ class AKShareData:
             db_columns = [
                 "code",
                 "name",
+                "etf_industry",  # 添加行业字段
                 "latest_price",
                 "price_change",
                 "pct_change",
@@ -861,6 +959,141 @@ class AKShareData:
             
         except Exception as e:
             logger.error(f"获取或处理ETF {code} 的 {period} 分钟K线数据失败: {e}", exc_info=True)
+            return pd.DataFrame()
+
+
+    def get_sector_data_hist(self, save=True, start_date=None, end_date=None):
+        """
+        获取所有A股行业板块的历史行情数据并存入数据库。
+        数据来源: akshare.stock_board_industry_name_em() 获取板块列表
+                  akshare.stock_board_industry_hist_em() 获取各板块历史数据
+        表名: sector_data
+        相关字段参考 schema quant_db.sql sector_data 表。
+        """
+        logger.info("开始获取行业板块历史行情数据...")
+        if not self.engine and save:
+            logger.error("数据库未连接，无法保存行业板块历史数据。")
+            return pd.DataFrame()
+
+        try:
+            # 1. 获取行业板块列表
+            logger.info("正在获取行业板块列表...")
+            industry_names_df = ak.stock_board_industry_name_em()
+            # Expected columns: '板块名称', '板块代码', ...
+            if '板块代码' not in industry_names_df.columns or '板块名称' not in industry_names_df.columns:
+                logger.error("无法从 ak.stock_board_industry_name_em() 获取板块代码或板块名称。")
+                return pd.DataFrame()
+            
+            logger.info(f"成功获取 {len(industry_names_df)} 个行业板块。")
+
+            all_sectors_hist_data = []
+            default_start_date_str = "19900101"
+            default_end_date_str = datetime.now().strftime('%Y%m%d')
+
+            for index, row in industry_names_df.iterrows():
+                sector_code = row['板块代码']
+                sector_name = row['板块名称']
+                logger.info(f"正在获取板块 {sector_name} ({sector_code}) 的历史数据...")
+
+                try:
+                    current_start_date = start_date.strftime('%Y%m%d') if start_date else default_start_date_str
+                    current_end_date = end_date.strftime('%Y%m%d') if end_date else default_end_date_str
+                    
+                    hist_df = ak.stock_board_industry_hist_em(
+                        symbol=sector_code, 
+                        period="日k",
+                        start_date=current_start_date,
+                        end_date=current_end_date,
+                        adjust="" # 不复权
+                    )
+
+                    if hist_df.empty:
+                        logger.warning(f"板块 {sector_name} ({sector_code}) 在指定日期范围 {current_start_date}-{current_end_date} 无历史数据返回。")
+                        continue
+
+                    hist_df['sector_id'] = sector_code
+                    hist_df['sector_name'] = sector_name
+                    
+                    column_mapping = {
+                        '日期': 'trade_date',
+                        '收盘': 'index_value',
+                        '涨跌幅': 'change_pct_1d',
+                        '成交量': 'volume',
+                        '成交额': 'amount',
+                        '涨跌额': 'change_amount',
+                        '换手率': 'turnover_rate'
+                    }
+                    hist_df = hist_df.rename(columns=column_mapping)
+
+                    hist_df['trade_date'] = pd.to_datetime(hist_df['trade_date']).dt.date
+                    
+                    for col in ['index_value', 'change_amount', 'amount']:
+                        if col in hist_df.columns:
+                            hist_df[col] = pd.to_numeric(hist_df[col], errors='coerce')
+                    
+                    for col in ['change_pct_1d', 'turnover_rate']:
+                        if col in hist_df.columns:
+                            hist_df[col] = pd.to_numeric(hist_df[col], errors='coerce') / 100.0
+                    
+                    if 'volume' in hist_df.columns:
+                        hist_df['volume'] = pd.to_numeric(hist_df['volume'], errors='coerce').astype('Int64')
+
+                    hist_df = hist_df.sort_values(by='trade_date').reset_index(drop=True)
+                    if 'index_value' in hist_df.columns and not hist_df['index_value'].isnull().all():
+                        hist_df['change_pct_5d'] = hist_df['index_value'].pct_change(periods=5)
+                        hist_df['change_pct_10d'] = hist_df['index_value'].pct_change(periods=10)
+                    else:
+                        hist_df['change_pct_5d'] = np.nan
+                        hist_df['change_pct_10d'] = np.nan
+                        
+                    db_columns = [
+                        'sector_id', 'sector_name', 'trade_date', 'index_value', 
+                        'change_pct_1d', 'change_pct_5d', 'change_pct_10d', 
+                        'volume', 'amount', 'change_amount', 'turnover_rate',
+                        'up_down_ratio', 'ranking', 'total_market_cap', 
+                        'riser_count', 'faller_count', 'leader_stock_code', 
+                        'leader_stock_name', 'leader_stock_change_pct'
+                    ]
+                    for col in db_columns:
+                        if col not in hist_df.columns:
+                            hist_df[col] = np.nan # Ensure all schema columns exist
+                            
+                    hist_df_to_save = hist_df[db_columns].copy()
+                    all_sectors_hist_data.append(hist_df_to_save)
+                    logger.info(f"Processed {len(hist_df_to_save)} records for {sector_name} ({sector_code}).")
+
+                except Exception as e_inner:
+                    logger.error(f"获取或处理板块 {sector_name} ({sector_code}) 数据失败: {e_inner}", exc_info=False)
+                    continue
+
+            if not all_sectors_hist_data:
+                logger.info("没有获取到任何行业板块的历史数据。")
+                return pd.DataFrame()
+
+            final_df = pd.concat(all_sectors_hist_data, ignore_index=True)
+            logger.info(f"总共处理了 {len(final_df)} 条行业板块历史数据记录。")
+
+            final_df.dropna(subset=['trade_date', 'sector_id', 'index_value'], how='any', inplace=True)
+
+            if save and self.engine and not final_df.empty:
+                logger.info(f"开始将 {len(final_df)} 条数据写入数据库 sector_data...")
+                success = upsert_df_to_sql(
+                    final_df, 
+                    "sector_data", 
+                    self.engine, 
+                    unique_columns=['sector_id', 'trade_date']
+                )
+                if success:
+                    logger.info(f"行业板块历史数据已成功写入数据库，共影响 {len(final_df)} 条记录的准备。") # upsert might update or insert
+                else:
+                    logger.error("行业板块历史数据写入数据库失败。")
+            elif final_df.empty:
+                logger.info("没有有效数据可写入数据库。")
+            
+            return final_df
+
+        except Exception as e_outer:
+            logger.error(f"获取行业板块历史数据主流程失败: {e_outer}", exc_info=True)
             return pd.DataFrame()
 
 if __name__ == "__main__":
