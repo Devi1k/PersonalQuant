@@ -8,7 +8,7 @@
 
 - [x] **创建行业以及 ETF 指数数据获取功能**
     - [x] 获取行业板块数据
-    - [] 获取概念板块数据
+    - [x] 获取概念板块数据
     - [x] 获取 ETF 指数数据
 - [x] **开发ETF-行业板块关联数据管理功能**
     - [x] 记录ETF代码与所属行业板块ID的关联：调用 fund_portfolio_hold_em 获取 ETF 持仓前十，并调用 stock_individual_info_em 获取持仓个股的行业，取行业最多的作为ETF所属行业，写入 etf_list 表
