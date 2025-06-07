@@ -1,10 +1,10 @@
 backtest:
   benchmark: '000300'
-  commission: 0.0003
+  commission: 0.001
   end_date: '2024-12-31'
   initial_capital: 1000000
   slippage: 0.001
-  start_date: '2018-01-01'
+  start_date: '2022-01-01'
 data_source:
   etf_list_file: data/raw/etf_list.csv
   provider: akshare

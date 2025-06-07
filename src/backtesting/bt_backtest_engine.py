@@ -741,12 +741,12 @@ if __name__ == "__main__":
     
     # 运行回测
     config_file = 'config/config.yaml'
-    symbols = ['510300', '510500']  # 沪深300ETF, 中证500ETF
+    symbols = ['159998']  # 沪深300ETF, 中证500ETF
     
     results = run_backtest(
         config_file=config_file,
         symbols=symbols,
-        start_date='2018-01-01',
+        start_date='2022-01-01',
         end_date='2024-12-31',
         output_dir='backtest_results'
     )
