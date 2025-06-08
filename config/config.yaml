@@ -1,6 +1,6 @@
 backtest:
   benchmark: '000300'
-  commission: 0.001
+  commission: 0.0003
   end_date: '2024-12-31'
   initial_capital: 1000000
   slippage: 0.001
@@ -36,18 +36,18 @@ strategy:
     ema_channel_width: 0.05
     ema_long_period: 200
     ema_short_period: 21
-    fast_ma: 20
+    fast_ma: 5
     signal_weights:
       bb_signal: 1.0
       ema_reversal_signal: 1.2
       ema_signal: 1.5
       multi_timeframe_signal: 2.0
       volume_price_signal: 0.8
-    slow_ma: 60
+    slow_ma: 10
     timeframes:
     - 5
-    - 15
-    - 60
+    - 10
+    - 20
     volume_threshold: 1.2
 trading:
   final_check_time: '14:50'

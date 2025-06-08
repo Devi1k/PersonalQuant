@@ -9,11 +9,27 @@
 import pandas as pd
 import numpy as np
 import logging
+import os
 from datetime import datetime, timedelta
 from pathlib import Path
 import warnings  # Import warnings
+import sys
 
 # 设置日志
+current_file = Path(__file__).resolve()
+project_root = current_file.parent.parent.parent
+sys.path.insert(0, str(project_root))
+log_dir = os.path.join(project_root, "logs")
+os.makedirs(log_dir, exist_ok=True)
+# 设置日志
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - [%(filename)s:%(lineno)d] - %(message)s',
+    handlers=[
+        logging.FileHandler(os.path.join(log_dir, f"swing_strategy_{datetime.now().strftime('%Y%m%d')}.log")),
+        logging.StreamHandler()
+    ]
+)
 logger = logging.getLogger(__name__)
 
 
@@ -32,8 +48,8 @@ class SwingStrategy:
         self.config = config or {}
 
         # 从配置中获取策略参数，如果没有则使用默认值
-        swing_config = self.config.get("strategy", {}).get("swing", {})
-
+        swing_config = self.config.get("swing", {})
+        logger.info(f"波段策略配置: {swing_config}")
         # 形态驱动反转交易参数 - 适用于日线周期
         self.rsi_period = swing_config.get("rsi_period", 14)
         self.rsi_oversold = swing_config.get("rsi_oversold", 30)  # 从40调整到30，适应日线周期
