@@ -32,7 +32,17 @@ from src.utils.db_utils import get_db_engine, df_to_sql, load_config, query_etf_
 from src.data.data_processor import DataProcessor
 from src.strategy import FusionStrategy, TrendStrategy, SwingStrategy
 
+log_dir = os.path.join(project_root, "logs")
+os.makedirs(log_dir, exist_ok=True)
 # 设置日志
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - [%(filename)s:%(lineno)d] - %(message)s',
+    handlers=[
+        logging.FileHandler(os.path.join(log_dir, f"backtest_{datetime.now().strftime('%Y%m%d')}.log")),
+        logging.StreamHandler()
+    ]
+)
 logger = logging.getLogger(__name__)
 
 # 数据源适配器 - 将 DataFrame 转换为 Backtrader 可用的数据源
@@ -312,7 +322,6 @@ class BTBacktestEngine:
         
         # 策略配置
         self.strategy_config = self.config.get('strategy', {})
-        
         # 回测结果
         self.results = {
             'equity_curve': None,
@@ -741,12 +750,12 @@ if __name__ == "__main__":
     
     # 运行回测
     config_file = 'config/config.yaml'
-    symbols = ['510300', '510500']  # 沪深300ETF, 中证500ETF
+    symbols = ['159998']  # 沪深300ETF, 中证500ETF
     
     results = run_backtest(
         config_file=config_file,
         symbols=symbols,
-        start_date='2018-01-01',
+        start_date='2022-01-01',
         end_date='2024-12-31',
         output_dir='backtest_results'
     )

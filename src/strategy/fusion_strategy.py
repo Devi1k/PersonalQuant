@@ -63,6 +63,10 @@ class FusionStrategy:
         if 'MA50_slope' not in df.columns:
             df['MA50_slope'] = df['MA50'].diff(5) / df['MA50'].shift(5)
         
+        # 计算长期200日移动平均线（MA200），用于宏观趋势过滤
+        if 'MA200' not in df.columns:
+            df['MA200'] = talib.SMA(df['close'], timeperiod=200)
+        
         return df
     
     def update_thresholds(self, df):
@@ -221,58 +225,7 @@ class FusionStrategy:
         # 运行趋势策略
         trend_df = self.trend_strategy.combine_signals(df)
         
-        # 获取分钟级别K线数据
-        df_5min = pd.DataFrame()
-        df_15min = pd.DataFrame()
-        df_60min = pd.DataFrame()
-        
-        # 获取ETF代码和日期范围
-        etf_code = df['etf_code'].iloc[0] if 'etf_code' in df.columns else None
-        start_date = df['trade_date'].min().strftime('%Y-%m-%d') if 'trade_date' in df.columns else None
-        end_date = df['trade_date'].max().strftime('%Y-%m-%d') if 'trade_date' in df.columns else None
-        
-        # if etf_code and start_date and end_date:
-        #     # 导入数据库工具
-        #     from src.utils.db_utils import get_db_engine, query_minute_kline_data
-            
-        #     # 获取数据库引擎
-        #     engine = get_db_engine()
-            
-        #     # TODO： 不再查询分钟k
-        #     if engine:
-        #         # 查询5分钟K线数据
-        #         df_5min = query_minute_kline_data(
-        #             engine=engine,
-        #             etf_code=etf_code,
-        #             period=5,
-        #             start_date=start_date,
-        #             end_date=end_date
-        #         )
-                
-        #         # 查询15分钟K线数据
-        #         df_15min = query_minute_kline_data(
-        #             engine=engine,
-        #             etf_code=etf_code,
-        #             period=15,
-        #             start_date=start_date,
-        #             end_date=end_date
-        #         )
-                
-        #         # 查询60分钟K线数据
-        #         df_60min = query_minute_kline_data(
-        #             engine=engine,
-        #             etf_code=etf_code,
-        #             period=60,
-        #             start_date=start_date,
-        #             end_date=end_date
-        #         )
-                
-        #         logger.info(f"成功获取ETF {etf_code} 的分钟级别K线数据：5分钟({len(df_5min)}条)，15分钟({len(df_15min)}条)，60分钟({len(df_60min)}条)")
-        #     else:
-        #         logger.warning("数据库引擎创建失败，无法获取分钟级别K线数据")
-        # else:
-        #     logger.warning(f"缺少必要的数据：etf_code={etf_code}, start_date={start_date}, end_date={end_date}，无法获取分钟级别K线数据")
-        
+
         # 运行波段策略
         swing_df = self.swing_strategy.combine_signals(df, weekly_df)
 
@@ -320,6 +273,13 @@ class FusionStrategy:
                         (combined_df['fusion_score'] > buy_threshold * 0.6), 'fusion_signal'] = 0.5
         combined_df.loc[(combined_df['fusion_score'] >= sell_threshold) &
                         (combined_df['fusion_score'] < sell_threshold * 0.6), 'fusion_signal'] = -0.5
+
+        # ====================  MA200 趋势过滤  ====================
+        # 只有当收盘价位于 MA200 之上时，才允许任何买入信号生效。
+        # 当价格低于 MA200 时，所有买入及试探性买入信号被强制设为 0。
+        below_ma200 = combined_df['close'] <= combined_df['MA200']
+        combined_df.loc[below_ma200 & (combined_df['fusion_signal'] > 0), 'fusion_signal'] = 0
+        combined_df.loc[below_ma200 & (combined_df['fusion_signal'] == 0.5), 'fusion_signal'] = 0
 
         # 记录信号统计
         buy_signals = (combined_df['fusion_signal'] > 0).sum()

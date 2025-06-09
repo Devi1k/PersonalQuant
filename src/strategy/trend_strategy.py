@@ -11,8 +11,24 @@ import numpy as np
 import logging
 from datetime import datetime, timedelta
 from pathlib import Path
+import os
+import sys
+current_file = Path(__file__).resolve()
+project_root = current_file.parent.parent.parent
+sys.path.insert(0, str(project_root))
 
 # 设置日志
+log_dir = os.path.join(project_root, "logs")
+os.makedirs(log_dir, exist_ok=True)
+# 设置日志
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - [%(filename)s:%(lineno)d] - %(message)s',
+    handlers=[
+        logging.FileHandler(os.path.join(log_dir, f"trend_strategy_{datetime.now().strftime('%Y%m%d')}.log")),
+        logging.StreamHandler()
+    ]
+)
 logger = logging.getLogger(__name__)
 
 class TrendStrategy:
@@ -30,8 +46,8 @@ class TrendStrategy:
         self.config = config or {}
         
         # 从配置中获取策略参数，如果没有则使用默认值
-        trend_config = self.config.get('strategy', {}).get('trend', {})
-        
+        trend_config = self.config.get('trend', {})
+        logger.info(f"趋势策略配置: {trend_config}")
         # 移动平均线参数
         self.fast_ma = trend_config.get('fast_ma', 20)
         self.slow_ma = trend_config.get('slow_ma', 60)

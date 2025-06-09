@@ -12,6 +12,7 @@ import numpy as np
 from datetime import datetime, timedelta
 import logging
 from pathlib import Path
+import talib
 # --- 新增导入 ---
 from ..utils.db_utils import get_db_engine, upsert_df_to_sql, load_config
 # --- ---
@@ -185,28 +186,25 @@ class DataProcessor:
         
         # 确保数据按日期排序
         result_df = result_df.sort_values("trade_date")
+
+        # --- 使用 TA-Lib 计算技术指标 ---
+        # 先提取 numpy 数组，供 TA-Lib 使用
+        close_np = result_df["close"].astype(float).values
+        high_np = result_df["high"].astype(float).values
+        low_np = result_df["low"].astype(float).values
+        volume_np = result_df["volume"].astype(float).values
         
-        # 1. 计算移动平均线 - 改进填充策略
+        # 1. 计算移动平均线 (SMA) 使用 TA-Lib
         ma_periods = [5, 10, 20, 60]
         for period in ma_periods:
-            # 计算移动平均线
-            result_df[f"ma_{period}"] = result_df["close"].rolling(window=period).mean()
-            # 避免前视偏差：只使用前向填充，不使用后向填充
+            # 旧的 pandas 计算方式已替换为 TA-Lib
+            # result_df[f"ma_{period}"] = result_df["close"].rolling(window=period).mean()
+            result_df[f"ma_{period}"] = talib.SMA(close_np, timeperiod=period)
             result_df[f"ma_{period}"] = result_df[f"ma_{period}"].fillna(method="ffill")
-            logger.info(f"计算 {period} 日移动平均线")
-            
-        # 1.1 计算指数移动平均线(EMA)
-        # 从配置中获取EMA通道参数，如果没有则使用默认值
-        ema_channel_period = 144
-        ema_channel_width = 0.05
+            logger.info(f"计算 {period} 日移动平均线 (SMA)")
         
-        if config and 'strategy' in config and 'trend' in config['strategy']:
-            trend_config = config['strategy']['trend']
-            ema_channel_period = trend_config.get('ema_channel_period', 144)
-            ema_channel_width = trend_config.get('ema_channel_width', 0.05)
-        
-        # 添加MACD所需的EMA周期
-        ema_periods = [12, 26, ema_channel_period]
+        # 1.1 计算指数移动平均线(EMA) 使用 TA-Lib
+        ema_periods = [12, 26, 144]
         # 添加配置中的MACD参数
         if config and 'strategy' in config and 'trend' in config['strategy']:
             trend_config = config['strategy']['trend']
@@ -219,216 +217,98 @@ class DataProcessor:
         ema_periods = list(set(ema_periods))
         
         for period in ema_periods:
-            # 计算EMA
-            result_df[f"ema_{period}"] = result_df["close"].ewm(span=period, adjust=False).mean()
-            # 避免前视偏差：只使用前向填充，不使用后向填充
+            # result_df[f"ema_{period}"] = result_df["close"].ewm(span=period, adjust=False).mean()
+            result_df[f"ema_{period}"] = talib.EMA(close_np, timeperiod=period)
             result_df[f"ema_{period}"] = result_df[f"ema_{period}"].fillna(method="ffill")
-            logger.info(f"计算 {period} 日指数移动平均线(EMA)")
-            
+            logger.info(f"计算 {period} 日指数移动平均线 (EMA)")
+        
         # 1.2 计算EMA均线通道
-        ema_col = f"ema_{ema_channel_period}"
+        ema_col = f"ema_{144}"
         if ema_col in result_df.columns:
             # 计算标准差作为通道宽度
-            ema_std = result_df["close"].rolling(window=ema_channel_period).std(ddof=1)
+            ema_std = result_df["close"].rolling(window=144).std(ddof=1)
             # 上通道 = EMA + 通道宽度
-            result_df[f"{ema_col}_upper"] = result_df[ema_col] * (1 + ema_channel_width)
+            result_df[f"{ema_col}_upper"] = result_df[ema_col] * (1 + 0.05)
             # 下通道 = EMA - 通道宽度
-            result_df[f"{ema_col}_lower"] = result_df[ema_col] * (1 - ema_channel_width)
+            result_df[f"{ema_col}_lower"] = result_df[ema_col] * (1 - 0.05)
             # 填充NaN值
             channel_cols = [f"{ema_col}_upper", f"{ema_col}_lower"]
             result_df[channel_cols] = result_df[channel_cols].fillna(method="ffill")
-            logger.info(f"计算{ema_channel_period}日EMA均线通道，宽度={ema_channel_width}")
+            logger.info(f"计算{144}日EMA均线通道，宽度=0.05")
         
-        # 2. 计算MACD
-        # 从配置中获取MACD参数，如果没有则使用默认值
-        macd_short_period = 12
-        macd_signal_period = 9
-        macd_long_period = 26
-        macd_short_ema = 21  # 1个月期EMA
-        macd_long_ema = 200  # 200日EMA
-        
-        if config and 'strategy' in config and 'trend' in config['strategy']:
-            trend_config = config['strategy']['trend']
-            macd_short_ema = trend_config.get('macd_short_period', 21)
-            macd_long_ema = trend_config.get('macd_long_period', 200)
-        
-        # MACD = 12日EMA - 26日EMA
-        # 信号线 = MACD的9日EMA
-        # MACD柱 = MACD - 信号线
-        # 计算MACD
-        # adjust=False确保与TA-Lib等标准库计算结果一致
-        ema12 = result_df["close"].ewm(span=macd_short_period, adjust=False).mean()
-        ema26 = result_df["close"].ewm(span=macd_long_period, adjust=False).mean()
-        result_df["macd"] = ema12 - ema26
-        result_df["macd_signal"] = result_df["macd"].ewm(span=macd_signal_period, adjust=False).mean()
-        result_df["macd_hist"] = result_df["macd"] - result_df["macd_signal"]
-        logger.info(f"计算MACD指标，短期={macd_short_period}，长期={macd_long_period}，信号线={macd_signal_period}")
+        # 2. 计算MACD 使用 TA-Lib
+        macd, macd_signal, macd_hist = talib.MACD(
+            close_np,
+            fastperiod=12,
+            slowperiod=26,
+            signalperiod=9,
+        )
+        result_df["macd"] = macd
+        result_df["macd_signal"] = macd_signal
+        result_df["macd_hist"] = macd_hist
+        logger.info(f"计算MACD指标，短期=12，长期=26，信号线=9")
         
         # 计算1个月期与200日EMA的收敛发散
-        ema21 = result_df["close"].ewm(span=macd_short_ema, adjust=False).mean()
-        ema200 = result_df["close"].ewm(span=macd_long_ema, adjust=False).mean()
-        result_df["ema_21"] = ema21
-        result_df["ema_200"] = ema200
-        result_df["ema_21_200_diff"] = ema21 - ema200
-        logger.info(f"计算{macd_short_ema}日与{macd_long_ema}日EMA收敛发散")
+        if "ema_21" in result_df.columns and "ema_200" in result_df.columns:
+            result_df["ema_21_200_diff"] = result_df["ema_21"] - result_df["ema_200"]
+            logger.info(f"计算21日与200日EMA收敛发散")
         
-        # 填充NaN值
-        macd_cols = ["macd", "macd_signal", "macd_hist"]
-        result_df[macd_cols] = result_df[macd_cols].fillna(0)
-        logger.info("计算MACD指标")
-        
-        # 3. 计算RSI (相对强弱指数)
-        # RSI = 100 - (100 / (1 + RS))
-        # RS = 平均上涨幅度 / 平均下跌幅度
-        delta = result_df["close"].diff()
-        gain = delta.where(delta > 0, 0)
-        loss = -delta.where(delta < 0, 0)
-        # 使用Wilder's Smoothing计算RSI
-        avg_gain_14 = gain.ewm(com=13, adjust=False).mean()
-        avg_loss_14 = loss.ewm(com=13, adjust=False).mean()
-        
-        # 处理除零情况
-        rs_14 = avg_gain_14 / avg_loss_14.replace(0, np.finfo(float).eps)
-        result_df["rsi_14"] = 100 - (100 / (1 + rs_14))
-        # 处理极值情况
-        result_df["rsi_14"] = result_df["rsi_14"].clip(0, 100).fillna(50)
+        # 3. 计算RSI 使用 TA-Lib
+        result_df["rsi_14"] = talib.RSI(close_np, timeperiod=14)
+        result_df["rsi_14"] = result_df["rsi_14"].fillna(50).clip(0, 100)
         logger.info("计算RSI指标")
         
-        # 4. 计算布林带
-        # 从配置中获取布林带参数，如果没有则使用默认值
-        bollinger_period = 20
-        bollinger_std_dev = 2.0
+        # 4. 计算布林带 使用 TA-Lib
+        upper, middle, lower = talib.BBANDS(
+            close_np,
+            timeperiod=20,
+            nbdevup=2.0,
+            nbdevdn=2.0,
+            matype=0,
+        )
+        result_df["bb_upper"] = upper
+        result_df["bb_middle"] = middle
+        result_df["bb_lower"] = lower
+        result_df["bb_std"] = (upper - lower) / (2 * 2.0)
+        logger.info(f"计算布林带指标，周期=20，标准差倍数=2.0")
         
-        if config and 'strategy' in config and 'trend' in config['strategy']:
-            trend_config = config['strategy']['trend']
-            bollinger_period = trend_config.get('bollinger_period', 20)
-            bollinger_std_dev = trend_config.get('bollinger_std_dev', 2.0)
-        
-        # 检查数据量是否足够计算布林带
-        if len(result_df) >= bollinger_period:
-            # 中轨 = N日移动平均线
-            result_df["bb_middle"] = result_df["close"].rolling(window=bollinger_period).mean()
-            # 使用样本标准差(ddof=1)而非总体标准差(ddof=0)
-            result_df["bb_std"] = result_df["close"].rolling(window=bollinger_period).std(ddof=1)
-            result_df["bb_upper"] = result_df["bb_middle"] + bollinger_std_dev * result_df["bb_std"]
-            result_df["bb_lower"] = result_df["bb_middle"] - bollinger_std_dev * result_df["bb_std"]
-            
-            # 改进填充策略
-            # 对于中轨，使用与移动平均线相同的填充策略
-            result_df["bb_middle"] = result_df["bb_middle"].fillna(method="ffill")
-            
-            # 对于标准差，使用前向填充，避免前视偏差
-            result_df["bb_std"] = result_df["bb_std"].fillna(method="ffill")
-            
-            # 重新计算上下轨，确保它们与中轨和标准差一致
-            result_df["bb_upper"] = result_df["bb_middle"] + bollinger_std_dev * result_df["bb_std"]
-            result_df["bb_lower"] = result_df["bb_middle"] - bollinger_std_dev * result_df["bb_std"]
-            
-            logger.info(f"计算布林带指标，周期={bollinger_period}，标准差倍数={bollinger_std_dev}")
-        else:
-            # 数据不足时，使用合理的默认值
-            logger.warning(f"数据量不足以计算布林带指标(需要至少{bollinger_period}个数据点，当前只有{len(result_df)}个)")
-            
-            # 设置默认值
-            mean_price = result_df["close"].mean()
-            std_price = result_df["close"].std() if len(result_df) > 1 else mean_price * 0.02
-            
-            result_df["bb_middle"] = mean_price
-            result_df["bb_std"] = std_price
-            result_df["bb_upper"] = mean_price + bollinger_std_dev * std_price
-            result_df["bb_lower"] = mean_price - bollinger_std_dev * std_price
-        
-        # 5. 计算KDJ
-        # 未成熟随机值（RSV）= (收盘价 - 最低价) / (最高价 - 最低价) * 100
-        # K = 2/3 * 前一日K值 + 1/3 * 当日RSV
-        # D = 2/3 * 前一日D值 + 1/3 * 当日K值
-        # J = 3 * K - 2 * D
-        # 计算KDJ指标
-        low_9 = result_df["low"].rolling(window=9).min()
-        high_9 = result_df["high"].rolling(window=9).max()
-        
-        # 处理除零问题
-        high_low_range = high_9 - low_9
-        rsv = np.where(high_low_range != 0,
-                      (result_df["close"] - low_9) / high_low_range * 100,
-                      50)  # 当最高价=最低价时，使用中性值50
-        
-        # 使用向量化计算K/D值，使用EMA实现平滑
-        k = pd.Series(rsv).ewm(alpha=1/3, adjust=False).mean().fillna(50)
-        d = k.ewm(alpha=1/3, adjust=False).mean().fillna(50)
+        # 5. 计算KDJ 使用 TA-Lib 的 STOCH
+        k, d = talib.STOCH(
+            high_np,
+            low_np,
+            close_np,
+            fastk_period=9,
+            slowk_period=3,
+            slowk_matype=0,
+            slowd_period=3,
+            slowd_matype=0,
+        )
         j = 3 * k - 2 * d
-        
         result_df["kdj_k"] = k
         result_df["kdj_d"] = d
         result_df["kdj_j"] = j
-        
-        # 处理极值
         kdj_cols = ["kdj_k", "kdj_d", "kdj_j"]
         result_df[kdj_cols] = result_df[kdj_cols].clip(0, 100)
         logger.info("计算KDJ指标")
         
-        # 6. 计算CCI (顺势指标)
-        # CCI = (TP - SMA(TP, n)) / (0.015 * MD)
-        # TP = (最高价 + 最低价 + 收盘价) / 3
-        # SMA(TP, n) = TP的n日简单移动平均
-        # MD = TP与SMA(TP, n)的平均绝对偏差
-        tp = (result_df["high"] + result_df["low"] + result_df["close"]) / 3
-        tp_sma_20 = tp.rolling(window=20).mean()
-        md_20 = tp.rolling(window=20).apply(lambda x: np.abs(x - x.mean()).mean())
-        # 处理除零情况
-        md_20_safe = md_20.replace(0, np.finfo(float).eps)
-        result_df["cci_20"] = (tp - tp_sma_20) / (0.015 * md_20_safe)
-        # 填充NaN值并处理极值
+        # 6. 计算CCI 使用 TA-Lib
+        result_df["cci_20"] = talib.CCI(high_np, low_np, close_np, timeperiod=20)
         result_df["cci_20"] = result_df["cci_20"].fillna(0).clip(-100, 100)
         logger.info("计算CCI指标")
         
-        # 7. 计算ATR (平均真实波幅)
-        # TR = max(当日最高价 - 当日最低价, |当日最高价 - 前一日收盘价|, |当日最低价 - 前一日收盘价|)
-        # ATR = TR的n日简单移动平均
-        tr1 = result_df["high"] - result_df["low"]
-        tr2 = (result_df["high"] - result_df["close"].shift(1)).abs()
-        tr3 = (result_df["low"] - result_df["close"].shift(1)).abs()
-        tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
-        # 使用Wilder's Smoothing计算ATR
-        result_df["atr_14"] = tr.ewm(alpha=1/14, adjust=False).mean()
+        # 7. 计算ATR 使用 TA-Lib
+        result_df["atr_14"] = talib.ATR(high_np, low_np, close_np, timeperiod=14)
         logger.info("计算ATR指标")
         
-        # 8. 计算OBV (能量潮)
-        # 如果当日收盘价 > 前一日收盘价，OBV = 前一日OBV + 当日成交量
-        # 如果当日收盘价 < 前一日收盘价，OBV = 前一日OBV - 当日成交量
-        # 如果当日收盘价 = 前一日收盘价，OBV = 前一日OBV
-        # 使用向量化计算OBV，提高效率
-        price_change = result_df["close"].diff()
-        volume_direction = np.sign(price_change)  # 1 for up, -1 for down, 0 for no change
-        obv = (volume_direction * result_df["volume"]).cumsum()
-        result_df["obv"] = obv.fillna(0)
+        # 8. 计算OBV 使用 TA-Lib
+        result_df["obv"] = talib.OBV(close_np, volume_np)
+        result_df["obv"] = result_df["obv"].fillna(0)
         logger.info("计算OBV指标")
         
-        # 9. 计算成交量的5日均线（用于量价齐升确认）
-        result_df["volume_ma_5"] = result_df["volume"].rolling(window=5).mean().fillna(method="ffill")
+        # 9. 计算成交量的5日均线 使用 TA-Lib
+        result_df["volume_ma_5"] = talib.SMA(volume_np, timeperiod=5)
+        result_df["volume_ma_5"] = result_df["volume_ma_5"].fillna(method="ffill")
         logger.info("计算成交量5日均线")
-        
-        # 10. 计算VWAP（成交量加权平均价格）
-        # 标准VWAP通常是日内指标，这里实现一个滚动的VWAP用于日线数据
-        # 避免前视偏差，只使用历史数据
-        if "volume" in result_df.columns:
-            # 计算典型价格 (TP)
-            result_df["typical_price"] = (result_df["high"] + result_df["low"] + result_df["close"]) / 3
-            # 计算价格乘以成交量
-            result_df["tp_volume"] = result_df["typical_price"] * result_df["volume"]
-            
-            # 计算20日滚动VWAP
-            window_size = 20
-            result_df["vwap_20"] = (
-                result_df["tp_volume"].rolling(window=window_size).sum() / 
-                result_df["volume"].rolling(window=window_size).sum()
-            )
-            
-            # 清理临时列
-            result_df = result_df.drop(columns=["typical_price", "tp_volume"])
-            logger.info(f"计算{window_size}日滚动VWAP")
-        
-        logger.info(f"技术指标计算完成，共添加 {len(result_df.columns) - len(df.columns)} 个技术指标")
         
         # --- 添加保存数据的逻辑 ---
         if hasattr(df, 'etf_code') and 'etf_code' in df.columns:
@@ -456,6 +336,8 @@ class DataProcessor:
                 else:
                     logger.error(f"ETF {etf_code} 技术指标数据写入数据库失败。")
         # --- 保存逻辑结束 ---
+        
+        logger.info(f"技术指标计算完成，共添加 {len(result_df.columns) - len(df.columns)} 个技术指标")
         
         return result_df
     

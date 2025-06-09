@@ -9,11 +9,27 @@
 import pandas as pd
 import numpy as np
 import logging
+import os
 from datetime import datetime, timedelta
 from pathlib import Path
 import warnings  # Import warnings
+import sys
 
 # 设置日志
+current_file = Path(__file__).resolve()
+project_root = current_file.parent.parent.parent
+sys.path.insert(0, str(project_root))
+log_dir = os.path.join(project_root, "logs")
+os.makedirs(log_dir, exist_ok=True)
+# 设置日志
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - [%(filename)s:%(lineno)d] - %(message)s',
+    handlers=[
+        logging.FileHandler(os.path.join(log_dir, f"swing_strategy_{datetime.now().strftime('%Y%m%d')}.log")),
+        logging.StreamHandler()
+    ]
+)
 logger = logging.getLogger(__name__)
 
 
@@ -32,8 +48,8 @@ class SwingStrategy:
         self.config = config or {}
 
         # 从配置中获取策略参数，如果没有则使用默认值
-        swing_config = self.config.get("strategy", {}).get("swing", {})
-
+        swing_config = self.config.get("swing", {})
+        logger.info(f"波段策略配置: {swing_config}")
         # 形态驱动反转交易参数 - 适用于日线周期
         self.rsi_period = swing_config.get("rsi_period", 14)
         self.rsi_oversold = swing_config.get("rsi_oversold", 30)  # 从40调整到30，适应日线周期
@@ -613,7 +629,7 @@ class SwingStrategy:
             (result_df["upper_to_middle_cross"]) |  # 价格穿越中轨向下
             (result_df["kdj_overbought"] & result_df["kdj_death_cross"])  # KDJ超买且死叉
         )
-        result_df.loc[long_exit_condition, "exit_signal"] = 2  # 2表示多头平仓
+        result_df.loc[long_exit_condition, "exit_signal"] = 1  # 1表示多头平仓
         
         # 空头平仓条件：
         # 1. 价格触及布林带下轨
@@ -624,13 +640,13 @@ class SwingStrategy:
             (result_df["lower_to_middle_cross"]) |  # 价格穿越中轨向上
             (result_df["kdj_oversold"] & result_df["kdj_golden_cross"])  # KDJ超卖且金叉
         )
-        result_df.loc[short_exit_condition, "exit_signal"] = -2  # -2表示空头平仓
+        result_df.loc[short_exit_condition, "exit_signal"] = -1  # -1表示空头平仓
         
         # 5. 综合通道回归均值信号
-        # 1 = 买入信号（价格从布林带下轨回归至中轨 + KDJ超卖或金叉）
-        # -1 = 卖出信号（价格从布林带上轨回归至中轨 + KDJ超买或死叉）
-        # 2 = 多头平仓信号
-        # -2 = 空头平仓信号
+        # 0.5 = 买入信号（价格从布林带下轨回归至中轨 + KDJ超卖或金叉）
+        # -0.5 = 卖出信号（价格从布林带上轨回归至中轨 + KDJ超买或死叉）
+        # 1 = 多头平仓信号
+        # -1 = 空头平仓信号
         # 0 = 无信号
         
         # 买入信号
@@ -638,14 +654,14 @@ class SwingStrategy:
             (result_df["lower_to_middle_cross"]) & 
             (result_df["kdj_oversold"] | result_df["kdj_golden_cross"])
         )
-        result_df.loc[buy_condition, "bollinger_signal"] = 1
+        result_df.loc[buy_condition, "bollinger_signal"] = 0.5
         
         # 卖出信号
         sell_condition = (
             (result_df["upper_to_middle_cross"]) & 
             (result_df["kdj_overbought"] | result_df["kdj_death_cross"])
         )
-        result_df.loc[sell_condition, "bollinger_signal"] = -1
+        result_df.loc[sell_condition, "bollinger_signal"] = -0.5
         
         # 将布林带信号作为最终的通道信号
         result_df["channel_signal"] = result_df["bollinger_signal"]
@@ -655,10 +671,10 @@ class SwingStrategy:
         result_df.loc[result_df["exit_signal"] != 0, "channel_signal"] = result_df["exit_signal"]
         
         # 统计信号数量
-        buy_signals = (result_df["channel_signal"] == 1).sum()
-        sell_signals = (result_df["channel_signal"] == -1).sum()
-        long_exit_signals = (result_df["channel_signal"] == 2).sum()
-        short_exit_signals = (result_df["channel_signal"] == -2).sum()
+        buy_signals = (result_df["channel_signal"] == 0.5).sum()
+        sell_signals = (result_df["channel_signal"] == -0.5).sum()
+        long_exit_signals = (result_df["channel_signal"] == 1).sum()
+        short_exit_signals = (result_df["channel_signal"] == -1).sum()
         
         logger.info(f"通道回归均值策略信号计算完成，买入信号: {buy_signals}个, 卖出信号: {sell_signals}个, 多头平仓信号: {long_exit_signals}个, 空头平仓信号: {short_exit_signals}个")
         

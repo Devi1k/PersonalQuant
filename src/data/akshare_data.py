@@ -777,12 +777,12 @@ class AKShareData:
         result = {}
 
         # 1. 获取 ETF 列表 (get_etf_list 内部处理保存)
-        etf_list = self.get_etf_list(save=save)
-        result["etf_list"] = etf_list
+        etf_list_df = self.get_etf_list(save=save)
+        result["etf_list"] = etf_list_df
 
         # 2. 获取 ETF 指标数据 (get_etf_indicator 内部处理保存)
         etf_indicator = self.get_etf_indicator(
-            etf_codes if etf_codes else etf_list["ts_code"].tolist(),
+            etf_codes if etf_codes else etf_list_df["ts_code"].tolist(),
             start_date,
             end_date,
             save=save,
@@ -806,160 +806,160 @@ class AKShareData:
         logger.info("所有数据获取完成")
         return result
 
-    def get_etf_minute_kline(
-        self, code, period=5, start_date=None, end_date=None, save=True
-    ):
-        """
-        获取ETF分钟级别K线数据并写入数据库
+    # def get_etf_minute_kline(
+    #     self, code, period=5, start_date=None, end_date=None, save=True
+    # ):
+    #     """
+    #     获取ETF分钟级别K线数据并写入数据库
         
-        Parameters
-        ----------
-        code : str
-            ETF代码，例如 "sh510050"
-        period : int
-            K线周期，支持 5（5分钟）、15（15分钟）、60（60分钟）
-        start_date : str, optional
-            开始日期，格式为 "YYYY-MM-DD"，默认为当前日期前7天
-        end_date : str, optional
-            结束日期，格式为 "YYYY-MM-DD"，默认为当前日期
-        save : bool, optional
-            是否保存到数据库，默认为 True
+    #     Parameters
+    #     ----------
+    #     code : str
+    #         ETF代码，例如 "sh510050"
+    #     period : int
+    #         K线周期，支持 5（5分钟）、15（15分钟）、60（60分钟）
+    #     start_date : str, optional
+    #         开始日期，格式为 "YYYY-MM-DD"，默认为当前日期前7天
+    #     end_date : str, optional
+    #         结束日期，格式为 "YYYY-MM-DD"，默认为当前日期
+    #     save : bool, optional
+    #         是否保存到数据库，默认为 True
             
-        Returns
-        -------
-        pandas.DataFrame
-            包含分钟级别K线数据的DataFrame
-        """
-        if not self.engine and save:
-            logger.error(f"数据库未连接，无法保存ETF {code} 的分钟K线数据。")
-            return pd.DataFrame()
+    #     Returns
+    #     -------
+    #     pandas.DataFrame
+    #         包含分钟级别K线数据的DataFrame
+    #     """
+    #     if not self.engine and save:
+    #         logger.error(f"数据库未连接，无法保存ETF {code} 的分钟K线数据。")
+    #         return pd.DataFrame()
             
-        # 验证周期参数
-        valid_periods = [5, 15, 60]
-        if period not in valid_periods:
-            logger.error(f"不支持的K线周期: {period}，支持的周期为: {valid_periods}")
-            return pd.DataFrame()
+    #     # 验证周期参数
+    #     valid_periods = [5, 15, 60]
+    #     if period not in valid_periods:
+    #         logger.error(f"不支持的K线周期: {period}，支持的周期为: {valid_periods}")
+    #         return pd.DataFrame()
             
-        # 设置默认日期
-        if start_date is None:
-            start_date_obj = (datetime.now() - timedelta(days=7)).date()
-            start_date = start_date_obj.strftime("%Y-%m-%d")
-        else:
-            start_date_obj = pd.to_datetime(start_date).date()
+    #     # 设置默认日期
+    #     if start_date is None:
+    #         start_date_obj = (datetime.now() - timedelta(days=7)).date()
+    #         start_date = start_date_obj.strftime("%Y-%m-%d")
+    #     else:
+    #         start_date_obj = pd.to_datetime(start_date).date()
             
-        if end_date is None:
-            end_date_obj = datetime.now().date()
-            end_date = end_date_obj.strftime("%Y-%m-%d")
-        else:
-            end_date_obj = pd.to_datetime(end_date).date()
+    #     if end_date is None:
+    #         end_date_obj = datetime.now().date()
+    #         end_date = end_date_obj.strftime("%Y-%m-%d")
+    #     else:
+    #         end_date_obj = pd.to_datetime(end_date).date()
             
-        # AKShare接口需要的日期格式转换
-        start_date_req = start_date.replace("-", "")
-        end_date_req = end_date.replace("-", "")
+    #     # AKShare接口需要的日期格式转换
+    #     start_date_req = start_date.replace("-", "")
+    #     end_date_req = end_date.replace("-", "")
         
-        logger.info(
-            f"开始获取ETF {code} 从 {start_date} 到 {end_date} 的 {period} 分钟K线数据..."
-        )
+    #     logger.info(
+    #         f"开始获取ETF {code} 从 {start_date} 到 {end_date} 的 {period} 分钟K线数据..."
+    #     )
         
-        try:
-            # 使用AKShare获取ETF分钟K线数据
-            # 移除前缀，AKShare接口通常不需要sh/sz前缀
-            if code.startswith("sh") or code.startswith("sz"):
-                code_no_prefix = code[2:]
-            else:
-                code_no_prefix = code
+    #     try:
+    #         # 使用AKShare获取ETF分钟K线数据
+    #         # 移除前缀，AKShare接口通常不需要sh/sz前缀
+    #         if code.startswith("sh") or code.startswith("sz"):
+    #             code_no_prefix = code[2:]
+    #         else:
+    #             code_no_prefix = code
                 
-            # 调用AKShare接口获取分钟K线数据
-            # 根据period参数选择相应的周期
-            period_map = {5: "5", 15: "15", 60: "60"}
-            period_str = period_map.get(period, "5")
+    #         # 调用AKShare接口获取分钟K线数据
+    #         # 根据period参数选择相应的周期
+    #         period_map = {5: "5", 15: "15", 60: "60"}
+    #         period_str = period_map.get(period, "5")
             
-            df = ak.stock_zh_a_minute(
-                symbol=code_no_prefix,
-                period=period_str,
-                start_date=start_date_req,
-                end_date=end_date_req,
-            )
+    #         df = ak.stock_zh_a_minute(
+    #             symbol=code_no_prefix,
+    #             period=period_str,
+    #             start_date=start_date_req,
+    #             end_date=end_date_req,
+    #         )
             
-            if df.empty:
-                logger.warning(f"未能获取到ETF {code} 的 {period} 分钟K线数据。")
-                return pd.DataFrame()
+    #         if df.empty:
+    #             logger.warning(f"未能获取到ETF {code} 的 {period} 分钟K线数据。")
+    #             return pd.DataFrame()
                 
-            # 数据库列名映射
-            column_mapping = {
-                "时间": "datetime",  # 临时列名，后面会拆分为trade_date和trade_time
-                "开盘": "open",
-                "最高": "high",
-                "最低": "low",
-                "收盘": "close",
-                "成交量": "volume",
-                "成交额": "amount",
-            }
-            df = df.rename(columns=column_mapping)
+    #         # 数据库列名映射
+    #         column_mapping = {
+    #             "时间": "datetime",  # 临时列名，后面会拆分为trade_date和trade_time
+    #             "开盘": "open",
+    #             "最高": "high",
+    #             "最低": "low",
+    #             "收盘": "close",
+    #             "成交量": "volume",
+    #             "成交额": "amount",
+    #         }
+    #         df = df.rename(columns=column_mapping)
             
-            # 将datetime列拆分为trade_date和trade_time
-            df["datetime"] = pd.to_datetime(df["datetime"])
-            df["trade_date"] = df["datetime"].dt.date
-            df["trade_time"] = df["datetime"].dt.time
+    #         # 将datetime列拆分为trade_date和trade_time
+    #         df["datetime"] = pd.to_datetime(df["datetime"])
+    #         df["trade_date"] = df["datetime"].dt.date
+    #         df["trade_time"] = df["datetime"].dt.time
             
-            # 添加ETF代码和周期列
-            df["etf_code"] = code_no_prefix
-            df["period"] = period
+    #         # 添加ETF代码和周期列
+    #         df["etf_code"] = code_no_prefix
+    #         df["period"] = period
             
-            # 选择数据库表需要的列
-            db_columns = [
-                "etf_code",
-                "trade_date",
-                "trade_time",
-                "period",
-                "open",
-                "high",
-                "low",
-                "close",
-                "volume",
-                "amount",
-            ]
+    #         # 选择数据库表需要的列
+    #         db_columns = [
+    #             "etf_code",
+    #             "trade_date",
+    #             "trade_time",
+    #             "period",
+    #             "open",
+    #             "high",
+    #             "low",
+    #             "close",
+    #             "volume",
+    #             "amount",
+    #         ]
             
-            # 过滤掉DataFrame中不存在的列
-            db_columns_present = [col for col in db_columns if col in df.columns]
-            df_to_save = df[db_columns_present].copy()
+    #         # 过滤掉DataFrame中不存在的列
+    #         db_columns_present = [col for col in db_columns if col in df.columns]
+    #         df_to_save = df[db_columns_present].copy()
             
-            # 转换数据类型
-            for col in ["open", "high", "low", "close", "amount"]:
-                if col in df_to_save.columns:
-                    df_to_save[col] = pd.to_numeric(df_to_save[col], errors="coerce")
+    #         # 转换数据类型
+    #         for col in ["open", "high", "low", "close", "amount"]:
+    #             if col in df_to_save.columns:
+    #                 df_to_save[col] = pd.to_numeric(df_to_save[col], errors="coerce")
                     
-            if "volume" in df_to_save.columns:
-                # AKShare的成交量单位通常是手，数据库需要股
-                df_to_save["volume"] = (
-                    pd.to_numeric(df_to_save["volume"], errors="coerce") * 100
-                )
-                df_to_save["volume"] = df_to_save["volume"].astype("Int64")
+    #         if "volume" in df_to_save.columns:
+    #             # AKShare的成交量单位通常是手，数据库需要股
+    #             df_to_save["volume"] = (
+    #                 pd.to_numeric(df_to_save["volume"], errors="coerce") * 100
+    #             )
+    #             df_to_save["volume"] = df_to_save["volume"].astype("Int64")
                 
-            # 移除包含NaN主键的行
-            df_to_save.dropna(subset=["etf_code", "trade_date", "trade_time"], inplace=True)
+    #         # 移除包含NaN主键的行
+    #         df_to_save.dropna(subset=["etf_code", "trade_date", "trade_time"], inplace=True)
             
-            # 写入数据库
-            if save and self.engine:
-                success = upsert_df_to_sql(
-                    df_to_save,
-                    "minute_kline_data",
-                    self.engine,
-                    unique_columns=["etf_code", "trade_date", "trade_time", "period"],
-                )
+    #         # 写入数据库
+    #         if save and self.engine:
+    #             success = upsert_df_to_sql(
+    #                 df_to_save,
+    #                 "minute_kline_data",
+    #                 self.engine,
+    #                 unique_columns=["etf_code", "trade_date", "trade_time", "period"],
+    #             )
                 
-                if success:
-                    logger.info(
-                        f"ETF {code} 的 {period} 分钟K线数据已成功写入数据库 minute_kline_data，共 {len(df_to_save)} 条记录"
-                    )
-                else:
-                    logger.error(f"ETF {code} 的 {period} 分钟K线数据写入数据库失败。")
+    #             if success:
+    #                 logger.info(
+    #                     f"ETF {code} 的 {period} 分钟K线数据已成功写入数据库 minute_kline_data，共 {len(df_to_save)} 条记录"
+    #                 )
+    #             else:
+    #                 logger.error(f"ETF {code} 的 {period} 分钟K线数据写入数据库失败。")
                     
-            return df_to_save
+    #         return df_to_save
             
-        except Exception as e:
-            logger.error(f"获取或处理ETF {code} 的 {period} 分钟K线数据失败: {e}", exc_info=True)
-            return pd.DataFrame()
+    #     except Exception as e:
+    #         logger.error(f"获取或处理ETF {code} 的 {period} 分钟K线数据失败: {e}", exc_info=True)
+    #         return pd.DataFrame()
 
 
     def get_sector_data_hist(self, save=True, start_date=None, end_date=None):
@@ -1065,6 +1065,84 @@ class AKShareData:
                 except Exception as e_inner:
                     logger.error(f"获取或处理板块 {sector_name} ({sector_code}) 数据失败: {e_inner}", exc_info=False)
                     continue
+
+            if not all_sectors_hist_data:
+                logger.info("没有获取到任何行业板块的历史数据。")
+                return pd.DataFrame()
+
+            # 获取概念板块数据
+            try:
+                logger.info("正在获取概念板块列表...")
+                concept_names_df = ak.stock_board_concept_name_em()
+                if '板块代码' not in concept_names_df.columns or '板块名称' not in concept_names_df.columns:
+                    logger.error("无法从 ak.stock_board_concept_name_em() 获取板块代码或板块名称。")
+                else:
+                    logger.info(f"成功获取 {len(concept_names_df)} 个概念板块。")
+                    for idx, crow in concept_names_df.iterrows():
+                        concept_code = crow['板块代码']
+                        concept_name = crow['板块名称']
+                        logger.info(f"正在获取概念板块 {concept_name} ({concept_code}) 的历史数据...")
+                        try:
+                            current_start_date = start_date.strftime('%Y%m%d') if start_date else default_start_date_str
+                            current_end_date = end_date.strftime('%Y%m%d') if end_date else default_end_date_str
+
+                            chist_df = ak.stock_board_concept_hist_em(
+                                symbol=concept_code,
+                                start_date=current_start_date,
+                                end_date=current_end_date,
+                                adjust=""  # 不复权
+                            )
+
+                            if chist_df.empty:
+                                logger.warning(
+                                    f"概念板块 {concept_name} ({concept_code}) 在指定日期范围 {current_start_date}-{current_end_date} 无历史数据返回。"
+                                )
+                                continue
+
+                            chist_df['sector_id'] = concept_code
+                            chist_df['sector_name'] = concept_name
+
+                            # 使用与行业板块相同的列映射
+                            chist_df = chist_df.rename(columns=column_mapping)
+
+                            chist_df['trade_date'] = pd.to_datetime(chist_df['trade_date']).dt.date
+
+                            for col in ['index_value', 'change_amount', 'amount']:
+                                if col in chist_df.columns:
+                                    chist_df[col] = pd.to_numeric(chist_df[col], errors='coerce')
+
+                            for col in ['change_pct_1d', 'turnover_rate']:
+                                if col in chist_df.columns:
+                                    chist_df[col] = pd.to_numeric(chist_df[col], errors='coerce') / 100.0
+
+                            if 'volume' in chist_df.columns:
+                                chist_df['volume'] = pd.to_numeric(chist_df['volume'], errors='coerce').astype('Int64')
+
+                            chist_df = chist_df.sort_values(by='trade_date').reset_index(drop=True)
+                            if 'index_value' in chist_df.columns and not chist_df['index_value'].isnull().all():
+                                chist_df['change_pct_5d'] = chist_df['index_value'].pct_change(periods=5)
+                                chist_df['change_pct_10d'] = chist_df['index_value'].pct_change(periods=10)
+                            else:
+                                chist_df['change_pct_5d'] = np.nan
+                                chist_df['change_pct_10d'] = np.nan
+
+                            for col in db_columns:
+                                if col not in chist_df.columns:
+                                    chist_df[col] = np.nan
+
+                            chist_df_to_save = chist_df[db_columns].copy()
+                            all_sectors_hist_data.append(chist_df_to_save)
+                            logger.info(
+                                f"Processed {len(chist_df_to_save)} records for {concept_name} ({concept_code})."
+                            )
+                        except Exception as e_concept:
+                            logger.error(
+                                f"获取或处理概念板块 {concept_name} ({concept_code}) 数据失败: {e_concept}",
+                                exc_info=False,
+                            )
+                            continue
+            except Exception as e_outer_concept:
+                logger.error(f"获取概念板块列表或历史数据失败: {e_outer_concept}", exc_info=False)
 
             if not all_sectors_hist_data:
                 logger.info("没有获取到任何行业板块的历史数据。")
