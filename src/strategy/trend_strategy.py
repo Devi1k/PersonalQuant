@@ -9,6 +9,7 @@
 import pandas as pd
 import numpy as np
 import logging
+import talib
 from datetime import datetime, timedelta
 from pathlib import Path
 import os
@@ -46,7 +47,7 @@ class TrendStrategy:
         self.config = config or {}
         
         # 从配置中获取策略参数，如果没有则使用默认值
-        trend_config = self.config.get('trend', {})
+        trend_config = self.config
         logger.info(f"趋势策略配置: {trend_config}")
         # 移动平均线参数
         self.fast_ma = trend_config.get('fast_ma', 20)
@@ -187,7 +188,7 @@ class TrendStrategy:
             return df
         
         # 确保必要的列存在
-        required_cols = ["date", "close", "ema_21", "ema_200", "ema_21_200_diff"]
+        required_cols = ["date", "close"]
         missing_cols = [col for col in required_cols if col not in df.columns]
         if missing_cols:
             logger.error(f"EMA交叉策略所需的列缺失: {missing_cols}")
@@ -198,8 +199,13 @@ class TrendStrategy:
         # 复制数据，避免修改原始数据
         result_df = df.copy()
         
-        # 计算差值的变化率
-        result_df['ema_diff_change'] = result_df['ema_21_200_diff'].diff()
+        # 使用talib计算快速和慢速EMA
+        result_df['ema_fast'] = talib.EMA(result_df['close'], timeperiod=self.fast_ma)
+        result_df['ema_slow'] = talib.EMA(result_df['close'], timeperiod=self.slow_ma)
+        
+        # 差值及其变化率
+        result_df['ema_diff'] = result_df['ema_fast'] - result_df['ema_slow']
+        result_df['ema_diff_change'] = result_df['ema_diff'].diff()
         
         # 计算交叉信号
         # 1. 金叉：短期EMA从下方穿过长期EMA
@@ -207,29 +213,29 @@ class TrendStrategy:
         
         # 金叉信号
         result_df['ema_golden_cross'] = (
-            (result_df['ema_21'] > result_df['ema_200']) & 
-            (result_df['ema_21'].shift(1) <= result_df['ema_200'].shift(1))
+            (result_df['ema_fast'] > result_df['ema_slow']) &
+            (result_df['ema_fast'].shift(1) <= result_df['ema_slow'].shift(1))
         )
         
         # 死叉信号
         result_df['ema_death_cross'] = (
-            (result_df['ema_21'] < result_df['ema_200']) & 
-            (result_df['ema_21'].shift(1) >= result_df['ema_200'].shift(1))
+            (result_df['ema_fast'] < result_df['ema_slow']) &
+            (result_df['ema_fast'].shift(1) >= result_df['ema_slow'].shift(1))
         )
         
         # 收敛信号：差值向0靠近
         result_df['ema_converging'] = (
-            (result_df['ema_21'] > result_df['ema_200']) & 
+            (result_df['ema_fast'] > result_df['ema_slow']) &
             (result_df['ema_diff_change'] < 0) |
-            (result_df['ema_21'] < result_df['ema_200']) & 
+            (result_df['ema_fast'] < result_df['ema_slow']) &
             (result_df['ema_diff_change'] > 0)
         )
         
         # 发散信号：差值远离0
         result_df['ema_diverging'] = (
-            (result_df['ema_21'] > result_df['ema_200']) & 
+            (result_df['ema_fast'] > result_df['ema_slow']) &
             (result_df['ema_diff_change'] > 0) |
-            (result_df['ema_21'] < result_df['ema_200']) & 
+            (result_df['ema_fast'] < result_df['ema_slow']) &
             (result_df['ema_diff_change'] < 0)
         )
         
@@ -243,12 +249,12 @@ class TrendStrategy:
         
         # 买入信号：金叉或多头发散（短期EMA在长期EMA上方且差距扩大）
         result_df.loc[result_df['ema_golden_cross'], 'ema_signal'] = 1
-        result_df.loc[(result_df['ema_21'] > result_df['ema_200']) & 
+        result_df.loc[(result_df['ema_fast'] > result_df['ema_slow']) & 
                       (result_df['ema_diverging']), 'ema_signal'] = 1
         
         # 卖出信号：死叉或空头发散（短期EMA在长期EMA下方且差距扩大）
         result_df.loc[result_df['ema_death_cross'], 'ema_signal'] = -1
-        result_df.loc[(result_df['ema_21'] < result_df['ema_200']) & 
+        result_df.loc[(result_df['ema_fast'] < result_df['ema_slow']) & 
                       (result_df['ema_diverging']), 'ema_signal'] = -1
         
         # 统计信号数量
@@ -613,8 +619,8 @@ class TrendStrategy:
             df = self.bollinger_bands_breakout(df)
         
         # 生成EMA交叉信号
-        if 'ema_21' in df.columns and 'ema_200' in df.columns:
-            df = self.ema_crossover_signal(df)
+        # if 'ema_fast' in df.columns and 'ema_slow' in df.columns:
+        df = self.ema_crossover_signal(df)
         
         # 生成EMA通道反转信号
         if 'ema_144' in df.columns and 'ema_144_upper' in df.columns and 'ema_144_lower' in df.columns:
@@ -642,7 +648,7 @@ class TrendStrategy:
         result_df = df.copy()
         
         # 按照策略类型分组
-        trend_signals = ['bb_signal', 'ema_signal']
+        trend_signals = ['ema_signal']
         multi_tf_signals = ['multi_timeframe_signal']
         reversal_signals = ['ema_reversal_signal']
         confirmation_signals = ['volume_price_signal']
@@ -682,73 +688,59 @@ class TrendStrategy:
         
         # 成交量确认可以作为额外的过滤条件
         result_df['volume_confirmed'] = result_df['confirmation_score'] > 0
-        
-        # 生成最终交易信号
-        # 1 = 买入信号（得分 > 0 且至少一个主要策略有信号）
-        # -1 = 卖出信号（得分 < 0 且至少一个主要策略有信号）
-        # 0 = 无信号
-        
+
+        # --- 组合信号逻辑（独裁者+顾问模型） ---
+        # 初始化最终仓位列
+        result_df['final_position'] = 0.0
+
+        # 规则 1：核心趋势策略（优先级最高）
+        # TODO： 恢复multi tf score
+        # main_buy_condition = (result_df['trend_score'] >= 1.0) & (result_df['multi_tf_score'] > 1.0)
+        # main_sell_condition = (result_df['trend_score'] <= -1.0) & (result_df['multi_tf_score'] < -1.0)
+        main_buy_condition = (result_df['trend_score'] >= 1.0) 
+        main_sell_condition = (result_df['trend_score'] <= -1.0)
+
+        result_df.loc[main_buy_condition, 'final_position'] = 1.0
+        result_df.loc[main_sell_condition, 'final_position'] = -1.0
+
+        # # 规则 2：反转策略（仅在未触发主要趋势信号时）
+        # reversal_buy_condition = (result_df['final_position'] == 0.0) & \
+        #                          (result_df['trend_score'] < -1.5) & \
+        #                          (result_df['reversal_score'] > 1.0)
+
+        # reversal_sell_condition = (result_df['final_position'] == 0.0) & \
+        #                           (result_df['trend_score'] > 1.5) & \
+        #                           (result_df['reversal_score'] < -1.0)
+
+        # result_df.loc[reversal_buy_condition, 'final_position'] = 0.3
+        # result_df.loc[reversal_sell_condition, 'final_position'] = -0.3
+
+        # # 规则 3：成交量过滤器（否决或减弱）
+        # no_volume_condition = (result_df['final_position'] != 0.0) & (~result_df['volume_confirmed'])
+        # result_df.loc[no_volume_condition, 'final_position'] *= 0.5
+
+        # --- 将 final_position 映射为信号 ---
         result_df['final_signal'] = 0
-        
-        # 买入条件：综合得分为正，且至少有一个主要策略（趋势或多周期）发出买入信号
-        buy_condition = (
-            (result_df['signal_score'] > 0) &
-            ((result_df['trend_score'] > 0) | (result_df['multi_tf_score'] > 0))
-        )
-        
-        # 卖出条件：综合得分为负，且至少有一个主要策略（趋势或多周期）发出卖出信号
-        sell_condition = (
-            (result_df['signal_score'] < 0) &
-            ((result_df['trend_score'] < 0) | (result_df['multi_tf_score'] < 0))
-        )
-        
-        # 反转策略的特殊处理：当主要趋势为强烈上升但反转信号出现时，减仓但不完全卖出
-        reversal_hedge_condition = (
-            (result_df['trend_score'] > 1.5) &
-            (result_df['reversal_score'] < -1.0)
-        )
-        
-        # 反转策略的特殊处理：当主要趋势为强烈下跌但反转信号出现时，小仓位试探性买入
-        reversal_buy_condition = (
-            (result_df['trend_score'] < -1.5) &
-            (result_df['reversal_score'] > 1.0)
-        )
-        
-        # 设置最终信号
-        result_df.loc[buy_condition, 'final_signal'] = 1
-        result_df.loc[sell_condition, 'final_signal'] = -1
-        
-        # 反转策略对冲信号（减仓信号，用-0.5表示）
-        result_df.loc[reversal_hedge_condition, 'final_signal'] = -0.5
-        
-        # 反转策略试探性买入信号（小仓位，用0.5表示）
-        result_df.loc[reversal_buy_condition, 'final_signal'] = 0.5
-        
-        # 成交量确认：如果没有成交量确认，可以降低信号强度
-        result_df.loc[(result_df['final_signal'] != 0) & (~result_df['volume_confirmed']), 'final_signal'] *= 0.8
-        
+        result_df.loc[result_df['final_position'] == 1.0, 'final_signal'] = 1
+        result_df.loc[result_df['final_position'] == -1.0, 'final_signal'] = -1
+        result_df.loc[(result_df['final_position'] > 0) & (result_df['final_position'] < 1.0), 'final_signal'] = 0.5
+        result_df.loc[(result_df['final_position'] < 0) & (result_df['final_position'] > -1.0), 'final_signal'] = -0.5
+
         # 应用收盘价交易执行
-        result_df = self.close_price_execution(result_df, 'final_signal')
-        
-        # 添加仓位计算逻辑（之前在close_price_execution中）
-        # 创建仓位大小列
-        result_df['final_signal_position'] = 0.0
-        
-        # 设置不同信号对应的仓位大小
-        result_df.loc[result_df['final_signal'] == 1, 'final_signal_position'] = 1.0    # 完全买入（标准仓位）
-        result_df.loc[result_df['final_signal'] == 0.5, 'final_signal_position'] = 0.3  # 试探性买入（小仓位，30%）
-        result_df.loc[result_df['final_signal'] == -0.5, 'final_signal_position'] = -0.5 # 减仓（减少50%仓位）
-        result_df.loc[result_df['final_signal'] == -1, 'final_signal_position'] = -1.0  # 完全卖出（清仓）
-        
+        # result_df = self.close_price_execution(result_df, 'final_signal')
+
+        # 使用最终仓位作为 position 列
+        # result_df['final_signal_position'] = result_df['final_position']
+
         # 统计信号数量
         buy_signals = (result_df['final_signal'] > 0).sum()
         sell_signals = (result_df['final_signal'] < 0).sum()
         logger.info(f"组合信号计算完成，买入信号: {buy_signals}个, 卖出信号: {sell_signals}个")
         logger.info(f"其中完全买入信号: {(result_df['final_signal'] == 1).sum()}个, "
-                   f"试探性买入信号: {(result_df['final_signal'] == 0.5).sum()}个, "
-                   f"完全卖出信号: {(result_df['final_signal'] == -1).sum()}个, "
-                   f"减仓信号: {(result_df['final_signal'] == -0.5).sum()}个")
-        
+                    f"试探性买入信号: {(result_df['final_signal'] == 0.5).sum()}个, "
+                    f"完全卖出信号: {(result_df['final_signal'] == -1).sum()}个, "
+                    f"减仓信号: {(result_df['final_signal'] == -0.5).sum()}个")
+
         return result_df
 
 

@@ -48,7 +48,7 @@ class SwingStrategy:
         self.config = config or {}
 
         # 从配置中获取策略参数，如果没有则使用默认值
-        swing_config = self.config.get("swing", {})
+        swing_config = self.config
         logger.info(f"波段策略配置: {swing_config}")
         # 形态驱动反转交易参数 - 适用于日线周期
         self.rsi_period = swing_config.get("rsi_period", 14)

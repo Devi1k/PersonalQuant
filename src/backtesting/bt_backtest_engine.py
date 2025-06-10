@@ -157,7 +157,7 @@ class FusionStrategyBT(bt.Strategy):
     def log(self, txt, dt=None):
         """日志函数"""
         dt = dt or self.datas[0].datetime.date(0)
-        logger.info(f'{dt.isoformat()} {txt}')
+        logger.info(f'{txt}')
 
     def notify_order(self, order):
         """订单状态通知"""
