@@ -276,9 +276,9 @@ class FusionStrategy:
         # ====================  MA200 趋势过滤  ====================
         # 只有当收盘价位于 MA200 之上时，才允许任何买入信号生效。
         # 当价格低于 MA200 时，所有买入及试探性买入信号被强制设为 0。
-        # below_ma200 = combined_df['close'] <= combined_df['MA200']
-        # combined_df.loc[below_ma200 & (combined_df['fusion_signal'] > 0), 'fusion_signal'] = 0
-        # combined_df.loc[below_ma200 & (combined_df['fusion_signal'] == 0.5), 'fusion_signal'] = 0
+        below_ma200 = combined_df['close'] <= combined_df['MA200']
+        combined_df.loc[below_ma200 & (combined_df['fusion_signal'] > 0), 'fusion_signal'] = 0
+        combined_df.loc[below_ma200 & (combined_df['fusion_signal'] == 0.5), 'fusion_signal'] = 0
 
         # 记录信号统计
         buy_signals = (combined_df['fusion_signal'] > 0).sum()

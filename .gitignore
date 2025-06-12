@@ -64,5 +64,8 @@ coverage.xml
 
 # data
 *.csv
+backtest_results/
 
 *.DS_Store
+
+

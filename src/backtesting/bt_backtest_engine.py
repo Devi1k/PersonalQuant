@@ -616,9 +616,9 @@ class BTBacktestEngine:
             'win_count': trades.get('won', {}).get('total', 0),
             'loss_count': trades.get('lost', {}).get('total', 0),
             'win_rate': trades.get('won', {}).get('total', 0) / max(1, trades.get('total', {}).get('total', 1)) * 100,
-            'avg_trade_pnl': trades.get('pnl', {}).get('average', 0),
-            'max_trade_pnl': trades.get('pnl', {}).get('max', 0),
-            'min_trade_pnl': trades.get('pnl', {}).get('min', 0),
+            'avg_trade_pnl': trades.get('pnl', {}).get('net', {}).get('average', 0),
+            'max_trade_pnl': trades.get('won', {}).get('pnl', {}).get('max', 0),
+            'min_trade_pnl': trades.get('lost', {}).get('pnl', {}).get('max', 0),
             'avg_trade_length': trades.get('len', {}).get('average', 0)
         }
         
@@ -733,7 +733,14 @@ def run_backtest(config_file, symbols=None, start_date=None, end_date=None, outp
         # 保存结果
         if output_dir is None:
             output_dir = 'backtest_results'
-        engine.save_results(output_dir)
+        
+        # 创建一个唯一的输出目录，用于存储本次回测的结果
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        # 可以在文件夹名称中加入策略参数等信息，以便更好地识别
+        run_output_dir = os.path.join(output_dir, f"run_{timestamp}")
+        
+        # 保存结果到新的唯一目录
+        engine.save_results(run_output_dir)
         
         return results
     except Exception as e:

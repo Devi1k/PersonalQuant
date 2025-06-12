@@ -67,14 +67,14 @@ strategy:
     ema_channel_width: 0.05
     ema_long_period: 200
     ema_short_period: 21
-    fast_ma: 5
+    fast_ma: 3
     signal_weights:
       bb_signal: 0
       ema_reversal_signal: 0
-      ema_signal: 1.0
+      ema_signal: 1
       multi_timeframe_signal: 0
       volume_price_signal: 0
-    slow_ma: 10
+    slow_ma: 16
     timeframes:
     - 5
     - 10

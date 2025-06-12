@@ -648,7 +648,10 @@ class TrendStrategy:
         result_df = df.copy()
         
         # 按照策略类型分组
+        # trend_signals = ['ema_signal', 'bb_signal']
         trend_signals = ['ema_signal']
+        # trend_signals = ['bb_signal']
+
         multi_tf_signals = ['multi_timeframe_signal']
         reversal_signals = ['ema_reversal_signal']
         confirmation_signals = ['volume_price_signal']
