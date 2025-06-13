@@ -29,6 +29,37 @@ strategy:
   rotation:
     lookback_period: 5
     top_n_industries: 3
+  swing:
+    atr_period: 14
+    atr_stop_loss_multiplier: 2.0
+    bollinger_period: 20
+    bollinger_reversion_bars: 5
+    bollinger_std_dev: 2.0
+    combined_signal_threshold: 2.0
+    ema_channel_width: 0.05
+    flag_max_retracement: 0.5
+    flag_pole_min_rise: 0.05
+    head_shoulder_breakout_volume_ratio: 1.5
+    head_shoulder_volume_ratio: 0.6
+    hedge_option_delta:
+    - 0.3
+    - 0.4
+    hedge_position_ratio:
+    - 0.15
+    - 0.25
+    kdj_j_oversold: 20
+    kdj_params:
+    - 9
+    - 3
+    - 3
+    rsi_oversold: 30
+    rsi_period: 14
+    signal_weights:
+      bollinger_signal: 2.5
+      hedge_signal: 1.0
+      pattern_signal: 1.5
+    td_sequence_count: 9
+    triangle_support_volume_ratio: 0.8
   trend:
     bollinger_period: 20
     bollinger_std_dev: 2.0
@@ -36,14 +67,14 @@ strategy:
     ema_channel_width: 0.05
     ema_long_period: 200
     ema_short_period: 21
-    fast_ma: 5
+    fast_ma: 3
     signal_weights:
-      bb_signal: 1.0
-      ema_reversal_signal: 1.2
-      ema_signal: 1.5
-      multi_timeframe_signal: 2.0
-      volume_price_signal: 0.8
-    slow_ma: 10
+      bb_signal: 0
+      ema_reversal_signal: 0
+      ema_signal: 1
+      multi_timeframe_signal: 0
+      volume_price_signal: 0
+    slow_ma: 16
     timeframes:
     - 5
     - 10

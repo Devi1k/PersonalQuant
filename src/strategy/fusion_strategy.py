@@ -242,37 +242,36 @@ class FusionStrategy:
         )
         
         # 基础加权融合
-        combined_df['fusion_score'] = trend_w * combined_df['trend_signal'] + swing_w * combined_df['swing_signal']
+        # combined_df['fusion_score'] = trend_w * combined_df['trend_signal'] + swing_w * combined_df['swing_signal']
         
         # 协同确认增强
-        combined_df.loc[combined_df['signal_agreement'], 'fusion_score'] *= self.confirmation_multiplier
+        # combined_df.loc[combined_df['signal_agreement'], 'fusion_score'] *= self.confirmation_multiplier
         
-        # 生成最终信号
-        combined_df['fusion_signal'] = 0
+        # 生成最终信号改为仅使用趋势策略
+        combined_df['fusion_signal'] = trend_df['final_signal']
         
+        # === 以下阈值及分级信号逻辑暂时停用 ===
         # 强信号阈值
-        buy_threshold = 0.5
-        sell_threshold = -0.5
+        # buy_threshold = 0.5
+        # sell_threshold = -0.5
         
         # 根据市场状态调整信号阈值
-        if 'trend' in market_state:
-            # 趋势市场降低买入阈值，提高卖出阈值绝对值
-            buy_threshold = 0.4 if 'up' in market_state else 0.6
-            sell_threshold = -0.6 if 'up' in market_state else -0.4
-        elif market_state == 'range':
-            # 震荡市场提高买入阈值，降低卖出阈值绝对值
-            buy_threshold = 0.6
-            sell_threshold = -0.4
+        # if 'trend' in market_state:
+        #     buy_threshold = 0.4 if 'up' in market_state else 0.6
+        #     sell_threshold = -0.6 if 'up' in market_state else -0.4
+        # elif market_state == 'range':
+        #     buy_threshold = 0.6
+        #     sell_threshold = -0.4
         
         # 应用调整后的阈值
-        combined_df.loc[combined_df['fusion_score'] > buy_threshold, 'fusion_signal'] = 1
-        combined_df.loc[combined_df['fusion_score'] < sell_threshold, 'fusion_signal'] = -1
+        # combined_df.loc[combined_df['fusion_score'] > buy_threshold, 'fusion_signal'] = 1
+        # combined_df.loc[combined_df['fusion_score'] < sell_threshold, 'fusion_signal'] = -1
         
         # 试探性信号（0.5强度）
-        combined_df.loc[(combined_df['fusion_score'] <= buy_threshold) &
-                        (combined_df['fusion_score'] > buy_threshold * 0.6), 'fusion_signal'] = 0.5
-        combined_df.loc[(combined_df['fusion_score'] >= sell_threshold) &
-                        (combined_df['fusion_score'] < sell_threshold * 0.6), 'fusion_signal'] = -0.5
+        # combined_df.loc[(combined_df['fusion_score'] <= buy_threshold) &
+        #                 (combined_df['fusion_score'] > buy_threshold * 0.6), 'fusion_signal'] = 0.5
+        # combined_df.loc[(combined_df['fusion_score'] >= sell_threshold) &
+        #                 (combined_df['fusion_score'] < sell_threshold * 0.6), 'fusion_signal'] = -0.5
 
         # ====================  MA200 趋势过滤  ====================
         # 只有当收盘价位于 MA200 之上时，才允许任何买入信号生效。
