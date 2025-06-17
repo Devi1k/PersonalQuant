@@ -65,7 +65,7 @@ class FusionStrategy:
         
         # 计算长期200日移动平均线（MA200），用于宏观趋势过滤
         if 'MA200' not in df.columns:
-            df['MA200'] = talib.SMA(df['close'], timeperiod=200)
+            df['MA200'] = talib.SMA(df['close'], timeperiod=150)
         
         return df
     

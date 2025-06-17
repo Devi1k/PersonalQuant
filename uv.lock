@@ -1613,6 +1613,7 @@ dependencies = [
     { name = "plotly" },
     { name = "pyecharts" },
     { name = "pymysql" },
+    { name = "pysocks" },
     { name = "python-dotenv" },
     { name = "pyyaml" },
     { name = "requests" },
@@ -1620,6 +1621,7 @@ dependencies = [
     { name = "seaborn" },
     { name = "sqlalchemy" },
     { name = "statsmodels" },
+    { name = "ta-lib" },
     { name = "tqdm" },
     { name = "tushare" },
 ]
@@ -1638,6 +1640,7 @@ requires-dist = [
     { name = "plotly", specifier = ">=5.3.0" },
     { name = "pyecharts", specifier = ">=1.9.0" },
     { name = "pymysql", specifier = ">=1.0.2" },
+    { name = "pysocks", specifier = ">=1.7.1" },
     { name = "python-dotenv", specifier = ">=0.19.0" },
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "requests", specifier = ">=2.25.0" },
@@ -1645,6 +1648,7 @@ requires-dist = [
     { name = "seaborn", specifier = ">=0.11.0" },
     { name = "sqlalchemy", specifier = ">=1.4.0" },
     { name = "statsmodels", specifier = ">=0.13.0" },
+    { name = "ta-lib", specifier = ">=0.6.4" },
     { name = "tqdm", specifier = ">=4.60.0" },
     { name = "tushare", specifier = ">=1.2.80" },
 ]
@@ -1904,6 +1908,15 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/bb/22/f1129e69d94ffff626bdb5c835506b3a5b4f3d070f17ea295e12c2c6f60f/pyparsing-3.2.3.tar.gz", hash = "sha256:b9c13f1ab8b3b542f72e28f634bad4de758ab3ce4546e4301970ad6fa77c38be", size = 1088608, upload-time = "2025-03-25T05:01:28.114Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/05/e7/df2285f3d08fee213f2d041540fa4fc9ca6c2d44cf36d3a035bf2a8d2bcc/pyparsing-3.2.3-py3-none-any.whl", hash = "sha256:a749938e02d6fd0b59b356ca504a24982314bb090c383e3cf201c95ef7e2bfcf", size = 111120, upload-time = "2025-03-25T05:01:24.908Z" },
+]
+
+[[package]]
+name = "pysocks"
+version = "1.7.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/bd/11/293dd436aea955d45fc4e8a35b6ae7270f5b8e00b53cf6c024c83b657a11/PySocks-1.7.1.tar.gz", hash = "sha256:3f8804571ebe159c380ac6de37643bb4685970655d3bba243530d6558b799aa0", size = 284429, upload-time = "2019-09-20T02:07:35.714Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/8d/59/b4572118e098ac8e46e399a1dd0f2d85403ce8bbaad9ec79373ed6badaf9/PySocks-1.7.1-py3-none-any.whl", hash = "sha256:2725bd0a9925919b9b51739eea5f9e2bae91e83288108a9ad338b2e3a4435ee5", size = 16725, upload-time = "2019-09-20T02:06:22.938Z" },
 ]
 
 [[package]]
@@ -2364,6 +2377,16 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/4f/76/67747e49dc758daae06f33aad8247b718cd7d224f091d2cd552681215bb2/statsmodels-0.14.4-cp313-cp313-musllinux_1_2_x86_64.whl", hash = "sha256:e31b95ac603415887c9f0d344cb523889cf779bc52d68e27e2d23c358958fec7", size = 10859503, upload-time = "2024-10-03T17:14:32.798Z" },
     { url = "https://files.pythonhosted.org/packages/1d/eb/cb8b01f5edf8f135eb3d0553d159db113a35b2948d0e51eeb735e7ae09ea/statsmodels-0.14.4-cp313-cp313-win_amd64.whl", hash = "sha256:81030108d27aecc7995cac05aa280cf8c6025f6a6119894eef648997936c2dd0", size = 9817574, upload-time = "2024-10-03T16:14:37.461Z" },
 ]
+
+[[package]]
+name = "ta-lib"
+version = "0.6.4"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy" },
+    { name = "setuptools" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/ba/97/a49816dd468a18ee080cf3a04640772a9f6321790d4049cece2490c4b7ad/ta_lib-0.6.4.tar.gz", hash = "sha256:08f55bc5771a6d1ceb1a2b713aad7b05f04eb0061e980c9113571c532d32e9cb", size = 381774, upload-time = "2025-06-08T15:28:15.452Z" }
 
 [[package]]
 name = "tabulate"

@@ -27,7 +27,9 @@ dependencies = [
     "PyYAML>=6.0",
     "SQLAlchemy>=1.4.0",
     "pymysql>=1.0.2",
-    "cryptography>=36.0.0"
+    "cryptography>=36.0.0",
+    "ta-lib>=0.6.4",
+    "pysocks>=1.7.1",
 ]
 
 [tool.uv]

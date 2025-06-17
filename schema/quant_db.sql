@@ -220,6 +220,8 @@ PARTITION BY RANGE (YEAR(trade_date)) (
 -- SET GLOBAL query_cache_type = 1;
 
 -- 创建数据导入存储过程
+DROP PROCEDURE IF EXISTS sp_import_etf_list;
+DROP PROCEDURE IF EXISTS sp_import_etf_indicators;
 DELIMITER //
 
 CREATE PROCEDURE sp_import_etf_list(IN p_file_path VARCHAR(255), IN p_update_date DATE)

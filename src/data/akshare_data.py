@@ -58,13 +58,13 @@ class AKShareData:
     def get_etf_list(self, save=True):
         """
         获取所有ETF基金列表并写入数据库
-        
+
         获取ETF列表，并通过分析ETF持仓前十的股票所属行业，确定ETF所属行业
         行业判断逻辑：
         1. 获取ETF持仓前十股票
         2. 查询每只股票所属行业
         3. 统计行业出现频率，取频率最高的行业作为ETF所属行业
-        
+
         Returns
         -------
         pandas.DataFrame
@@ -114,7 +114,7 @@ class AKShareData:
             # 添加ETF行业映射
             logger.info("开始获取ETF行业映射信息...")
             etf_df["etf_industry"] = None  # 初始化行业列
-            
+
             # 为避免频繁请求API导致被限制，随机选择部分ETF进行行业映射（如果之前没有映射过）
             # 或者可以考虑使用已有的映射数据，只为新增的ETF添加映射
             if self.engine:
@@ -122,55 +122,74 @@ class AKShareData:
                     # 获取已有的ETF行业映射
                     existing_etf_industry = pd.read_sql(
                         "SELECT code, etf_industry FROM etf_list WHERE etf_industry IS NOT NULL",
-                        self.engine
+                        self.engine,
                     )
                     # 将已有的映射合并到当前数据中
                     if not existing_etf_industry.empty:
                         etf_df = etf_df.merge(
-                            existing_etf_industry, on="code", how="left", suffixes=("", "_existing")
+                            existing_etf_industry,
+                            on="code",
+                            how="left",
+                            suffixes=("", "_existing"),
                         )
                         # 使用已有的行业映射填充
-                        mask = etf_df["etf_industry"].isna() & etf_df["etf_industry_existing"].notna()
-                        etf_df.loc[mask, "etf_industry"] = etf_df.loc[mask, "etf_industry_existing"]
+                        mask = (
+                            etf_df["etf_industry"].isna()
+                            & etf_df["etf_industry_existing"].notna()
+                        )
+                        etf_df.loc[mask, "etf_industry"] = etf_df.loc[
+                            mask, "etf_industry_existing"
+                        ]
                         etf_df.drop(columns=["etf_industry_existing"], inplace=True)
                         logger.info(f"已从数据库加载 {mask.sum()} 个ETF的行业映射")
                 except Exception as e:
                     logger.warning(f"获取已有ETF行业映射失败: {e}")
-            
+
             # 获取未映射行业的ETF代码
             unmapped_etfs = etf_df[etf_df["etf_industry"].isna()].copy()
-            
+
             # 如果未映射的ETF数量较多，可以限制每次处理的数量
-            max_process_count = 10  # 每次最多处理10个ETF
-            if len(unmapped_etfs) > max_process_count:
-                unmapped_etfs = unmapped_etfs.sample(max_process_count)
-                logger.info(f"本次将为 {max_process_count} 个ETF添加行业映射")
-            
+            # max_process_count = 10  # 每次最多处理10个ETF
+            # if len(unmapped_etfs) > max_process_count:
+            #     unmapped_etfs = unmapped_etfs.sample(max_process_count)
+            #     logger.info(f"本次将为 {max_process_count} 个ETF添加行业映射")
+
             # 为未映射的ETF添加行业信息
-            for idx, row in unmapped_etfs.iterrows():
+            from tqdm import tqdm
+            for idx, row in tqdm(unmapped_etfs.iterrows(), total=len(unmapped_etfs), desc="获取ETF行业映射"):
                 etf_code = row["code"]
                 try:
                     # 1. 获取ETF持仓前十
                     logger.debug(f"获取ETF {etf_code} ({row['name']}) 的持仓信息")
                     try:
                         # 使用fund_portfolio_hold_em获取ETF持仓
-                        # 参数格式可能需要调整，根据实际API要求
-                        holdings_df = ak.fund_portfolio_hold_em(fund=etf_code)
+                        # get date(year) and symbol with no prefix
+                        symbol = etf_code[2:]
+                        date = datetime.now().year
+                        holdings_df = ak.fund_portfolio_hold_em(
+                            symbol=symbol, date=date
+                        )
                         if holdings_df.empty:
                             logger.warning(f"ETF {etf_code} ({row['name']}) 无持仓数据")
                             continue
                     except Exception as e:
-                        logger.warning(f"获取ETF {etf_code} ({row['name']}) 持仓失败: {e}")
+                        logger.warning(
+                            f"获取ETF {etf_code} ({row['name']}) 持仓失败: {e}", exc_info=True
+                        )
                         continue
-                    
+
                     # 2. 获取持仓股票的行业信息
                     industries = []
                     # 假设持仓数据中股票代码列名为'stock_code'，可能需要根据实际返回调整
-                    stock_code_col = [col for col in holdings_df.columns if '代码' in col or 'code' in col.lower()]
+                    stock_code_col = [
+                        col
+                        for col in holdings_df.columns
+                        if "股票代码" in col or "code" in col.lower()
+                    ]
                     if not stock_code_col:
                         logger.warning(f"ETF {etf_code} 持仓数据中未找到股票代码列")
                         continue
-                    
+
                     stock_code_col = stock_code_col[0]
                     for _, holding in holdings_df.iterrows():
                         stock_code = holding[stock_code_col]
@@ -178,25 +197,36 @@ class AKShareData:
                             # 获取个股行业信息
                             stock_info = ak.stock_individual_info_em(symbol=stock_code)
                             # 假设行业信息在返回的DataFrame中的'industry'列
-                            industry_col = [col for col in stock_info.columns if '所属行业' in col or 'industry' in col.lower()]
+                            industry_col = [
+                                col
+                                for col in stock_info.columns
+                                if "所属行业" in col or "industry" in col.lower()
+                            ]
                             if industry_col:
                                 industry = stock_info.iloc[0][industry_col[0]]
                                 if industry and isinstance(industry, str):
                                     industries.append(industry)
                         except Exception as e:
                             logger.debug(f"获取股票 {stock_code} 行业信息失败: {e}")
-                    
+
                     # 3. 统计最常见的行业
                     if industries:
                         from collections import Counter
+
                         industry_counter = Counter(industries)
                         most_common_industry = industry_counter.most_common(1)[0][0]
                         # 更新ETF的行业信息
-                        etf_df.loc[etf_df["code"] == etf_code, "etf_industry"] = most_common_industry
-                        logger.info(f"ETF {etf_code} ({row['name']}) 行业确定为: {most_common_industry}")
+                        etf_df.loc[etf_df["code"] == etf_code, "etf_industry"] = (
+                            most_common_industry
+                        )
+                        logger.info(
+                            f"ETF {etf_code} ({row['name']}) 行业确定为: {most_common_industry}"
+                        )
                 except Exception as e:
-                    logger.warning(f"处理ETF {etf_code} ({row['name']}) 行业映射时出错: {e}")
-            
+                    logger.warning(
+                        f"处理ETF {etf_code} ({row['name']}) 行业映射时出错: {e}"
+                    )
+
             # 添加获取日期作为更新日期
             etf_df["update_date"] = datetime.now().date()  # 使用 date() 获取日期部分
 
@@ -614,22 +644,38 @@ class AKShareData:
             # except Exception as e:
             #     logger.warning(f"获取北向资金数据失败: {e}")
 
-            # 2. 获取融资融券数据 
+            # 2. 获取融资融券数据
             try:
                 # 尝试获取沪市
-                margin_sh_df = ak.stock_margin_sse(start_date=date_str_req, end_date=date_str_req)
+                margin_sh_df = ak.stock_margin_sse(
+                    start_date=date_str_req, end_date=date_str_req
+                )
                 # 尝试获取深市
-                margin_sz_df = ak.stock_margin_szse(date=date_str_req) # 注意接口参数差异
+                margin_sz_df = ak.stock_margin_szse(
+                    date=date_str_req
+                )  # 注意接口参数差异
                 margin_balance = 0
                 if not margin_sh_df.empty:
-                    margin_balance += margin_sh_df['融资余额'].iloc[0] if '融资余额' in margin_sh_df.columns else 0
+                    margin_balance += (
+                        margin_sh_df["融资余额"].iloc[0]
+                        if "融资余额" in margin_sh_df.columns
+                        else 0
+                    )
                 if not margin_sz_df.empty:
-                     margin_balance += margin_sz_df['融资余额'].iloc[0] if '融资余额' in margin_sz_df.columns else 0
+                    margin_balance += (
+                        margin_sz_df["融资余额"].iloc[0]
+                        if "融资余额" in margin_sz_df.columns
+                        else 0
+                    )
                 if margin_balance > 0:
-                    sentiment_data["margin_balance"] = margin_balance / 100000000 # 转为亿元
-                    logger.info(f"获取到融资融券余额: {sentiment_data['margin_balance']}亿元")
+                    sentiment_data["margin_balance"] = (
+                        margin_balance / 100000000
+                    )  # 转为亿元
+                    logger.info(
+                        f"获取到融资融券余额: {sentiment_data['margin_balance']}亿元"
+                    )
                 else:
-                     logger.warning(f"未找到{date_str_req}的融资融券数据")
+                    logger.warning(f"未找到{date_str_req}的融资融券数据")
             except Exception as e:
                 logger.warning(f"获取融资融券数据失败: {e}")
 
@@ -664,35 +710,56 @@ class AKShareData:
             logger.info("Fetching industry summary data (ths) for ratio calculation...")
             advances = 0
             declines = 0
-            ratio = None # Default value
+            ratio = None  # Default value
             try:
                 industry_summary_df = ak.stock_board_industry_summary_ths()
 
-                if not industry_summary_df.empty and '上涨家数' in industry_summary_df.columns and '下跌家数' in industry_summary_df.columns:
+                if (
+                    not industry_summary_df.empty
+                    and "上涨家数" in industry_summary_df.columns
+                    and "下跌家数" in industry_summary_df.columns
+                ):
                     # 确保列是数值类型，非数值转为0
-                    industry_summary_df['上涨家数'] = pd.to_numeric(industry_summary_df['上涨家数'], errors='coerce').fillna(0)
-                    industry_summary_df['下跌家数'] = pd.to_numeric(industry_summary_df['下跌家数'], errors='coerce').fillna(0)
-                    
-                    advances = int(industry_summary_df['上涨家数'].sum())
-                    declines = int(industry_summary_df['下跌家数'].sum())
-                    
-                    if advances > 0 or declines > 0: # Avoid division by zero
+                    industry_summary_df["上涨家数"] = pd.to_numeric(
+                        industry_summary_df["上涨家数"], errors="coerce"
+                    ).fillna(0)
+                    industry_summary_df["下跌家数"] = pd.to_numeric(
+                        industry_summary_df["下跌家数"], errors="coerce"
+                    ).fillna(0)
+
+                    advances = int(industry_summary_df["上涨家数"].sum())
+                    declines = int(industry_summary_df["下跌家数"].sum())
+
+                    if advances > 0 or declines > 0:  # Avoid division by zero
                         total = advances + declines
                         ratio = round(advances / total, 4)
-                        logger.info(f"Calculated up/down ratio from ths industry summary: {ratio} (Advances: {advances}, Declines: {declines})")
+                        logger.info(
+                            f"Calculated up/down ratio from ths industry summary: {ratio} (Advances: {advances}, Declines: {declines})"
+                        )
                     else:
-                         logger.warning("Aggregated advances and declines from ths industry summary are zero, cannot calculate ratio.")
+                        logger.warning(
+                            "Aggregated advances and declines from ths industry summary are zero, cannot calculate ratio."
+                        )
                 else:
-                    logger.warning("Could not find or process '上涨家数'/'下跌家数' columns in stock_board_industry_summary_ths output. Ratio calculation skipped.")
+                    logger.warning(
+                        "Could not find or process '上涨家数'/'下跌家数' columns in stock_board_industry_summary_ths output. Ratio calculation skipped."
+                    )
                     if not industry_summary_df.empty:
-                        logger.debug(f"Columns available in ths industry summary: {industry_summary_df.columns}")
+                        logger.debug(
+                            f"Columns available in ths industry summary: {industry_summary_df.columns}"
+                        )
                     else:
-                        logger.warning("stock_board_industry_summary_ths returned an empty DataFrame.")
+                        logger.warning(
+                            "stock_board_industry_summary_ths returned an empty DataFrame."
+                        )
 
             except Exception as e:
-                logger.error(f"Error fetching or processing stock_board_industry_summary_ths data for ratio: {e}", exc_info=True)
-            
-            sentiment_data["up_down_ratio"] = ratio # Assign calculated ratio or None
+                logger.error(
+                    f"Error fetching or processing stock_board_industry_summary_ths data for ratio: {e}",
+                    exc_info=True,
+                )
+
+            sentiment_data["up_down_ratio"] = ratio  # Assign calculated ratio or None
             # 如果需要，也可以保存原始涨跌家数
             # sentiment_data["advances_count"] = advances
             # sentiment_data["declines_count"] = declines
@@ -707,7 +774,7 @@ class AKShareData:
                     "up_limit_count",
                     "down_limit_count",
                     "up_down_ratio",
-                    "margin_balance"
+                    "margin_balance",
                     # 如有需要，添加其他之前保存的列: "north_fund", "margin_balance", "failed_limit_up_count"
                 ]
                 db_columns_present = [
@@ -727,7 +794,9 @@ class AKShareData:
                 if "up_down_ratio" in sentiment_df_to_save.columns:
                     sentiment_df_to_save["up_down_ratio"] = pd.to_numeric(
                         sentiment_df_to_save["up_down_ratio"], errors="coerce"
-                    ).round(4) # 增加精度控制
+                    ).round(
+                        4
+                    )  # 增加精度控制
 
                 # 移除 NaN 主键行
                 sentiment_df_to_save.dropna(subset=["trade_date"], inplace=True)
@@ -811,7 +880,7 @@ class AKShareData:
     # ):
     #     """
     #     获取ETF分钟级别K线数据并写入数据库
-        
+
     #     Parameters
     #     ----------
     #     code : str
@@ -824,7 +893,7 @@ class AKShareData:
     #         结束日期，格式为 "YYYY-MM-DD"，默认为当前日期
     #     save : bool, optional
     #         是否保存到数据库，默认为 True
-            
+
     #     Returns
     #     -------
     #     pandas.DataFrame
@@ -833,34 +902,34 @@ class AKShareData:
     #     if not self.engine and save:
     #         logger.error(f"数据库未连接，无法保存ETF {code} 的分钟K线数据。")
     #         return pd.DataFrame()
-            
+
     #     # 验证周期参数
     #     valid_periods = [5, 15, 60]
     #     if period not in valid_periods:
     #         logger.error(f"不支持的K线周期: {period}，支持的周期为: {valid_periods}")
     #         return pd.DataFrame()
-            
+
     #     # 设置默认日期
     #     if start_date is None:
     #         start_date_obj = (datetime.now() - timedelta(days=7)).date()
     #         start_date = start_date_obj.strftime("%Y-%m-%d")
     #     else:
     #         start_date_obj = pd.to_datetime(start_date).date()
-            
+
     #     if end_date is None:
     #         end_date_obj = datetime.now().date()
     #         end_date = end_date_obj.strftime("%Y-%m-%d")
     #     else:
     #         end_date_obj = pd.to_datetime(end_date).date()
-            
+
     #     # AKShare接口需要的日期格式转换
     #     start_date_req = start_date.replace("-", "")
     #     end_date_req = end_date.replace("-", "")
-        
+
     #     logger.info(
     #         f"开始获取ETF {code} 从 {start_date} 到 {end_date} 的 {period} 分钟K线数据..."
     #     )
-        
+
     #     try:
     #         # 使用AKShare获取ETF分钟K线数据
     #         # 移除前缀，AKShare接口通常不需要sh/sz前缀
@@ -868,23 +937,23 @@ class AKShareData:
     #             code_no_prefix = code[2:]
     #         else:
     #             code_no_prefix = code
-                
+
     #         # 调用AKShare接口获取分钟K线数据
     #         # 根据period参数选择相应的周期
     #         period_map = {5: "5", 15: "15", 60: "60"}
     #         period_str = period_map.get(period, "5")
-            
+
     #         df = ak.stock_zh_a_minute(
     #             symbol=code_no_prefix,
     #             period=period_str,
     #             start_date=start_date_req,
     #             end_date=end_date_req,
     #         )
-            
+
     #         if df.empty:
     #             logger.warning(f"未能获取到ETF {code} 的 {period} 分钟K线数据。")
     #             return pd.DataFrame()
-                
+
     #         # 数据库列名映射
     #         column_mapping = {
     #             "时间": "datetime",  # 临时列名，后面会拆分为trade_date和trade_time
@@ -896,16 +965,16 @@ class AKShareData:
     #             "成交额": "amount",
     #         }
     #         df = df.rename(columns=column_mapping)
-            
+
     #         # 将datetime列拆分为trade_date和trade_time
     #         df["datetime"] = pd.to_datetime(df["datetime"])
     #         df["trade_date"] = df["datetime"].dt.date
     #         df["trade_time"] = df["datetime"].dt.time
-            
+
     #         # 添加ETF代码和周期列
     #         df["etf_code"] = code_no_prefix
     #         df["period"] = period
-            
+
     #         # 选择数据库表需要的列
     #         db_columns = [
     #             "etf_code",
@@ -919,26 +988,26 @@ class AKShareData:
     #             "volume",
     #             "amount",
     #         ]
-            
+
     #         # 过滤掉DataFrame中不存在的列
     #         db_columns_present = [col for col in db_columns if col in df.columns]
     #         df_to_save = df[db_columns_present].copy()
-            
+
     #         # 转换数据类型
     #         for col in ["open", "high", "low", "close", "amount"]:
     #             if col in df_to_save.columns:
     #                 df_to_save[col] = pd.to_numeric(df_to_save[col], errors="coerce")
-                    
+
     #         if "volume" in df_to_save.columns:
     #             # AKShare的成交量单位通常是手，数据库需要股
     #             df_to_save["volume"] = (
     #                 pd.to_numeric(df_to_save["volume"], errors="coerce") * 100
     #             )
     #             df_to_save["volume"] = df_to_save["volume"].astype("Int64")
-                
+
     #         # 移除包含NaN主键的行
     #         df_to_save.dropna(subset=["etf_code", "trade_date", "trade_time"], inplace=True)
-            
+
     #         # 写入数据库
     #         if save and self.engine:
     #             success = upsert_df_to_sql(
@@ -947,20 +1016,19 @@ class AKShareData:
     #                 self.engine,
     #                 unique_columns=["etf_code", "trade_date", "trade_time", "period"],
     #             )
-                
+
     #             if success:
     #                 logger.info(
     #                     f"ETF {code} 的 {period} 分钟K线数据已成功写入数据库 minute_kline_data，共 {len(df_to_save)} 条记录"
     #                 )
     #             else:
     #                 logger.error(f"ETF {code} 的 {period} 分钟K线数据写入数据库失败。")
-                    
+
     #         return df_to_save
-            
+
     #     except Exception as e:
     #         logger.error(f"获取或处理ETF {code} 的 {period} 分钟K线数据失败: {e}", exc_info=True)
     #         return pd.DataFrame()
-
 
     def get_sector_data_hist(self, save=True, start_date=None, end_date=None):
         """
@@ -980,90 +1048,138 @@ class AKShareData:
             logger.info("正在获取行业板块列表...")
             industry_names_df = ak.stock_board_industry_name_em()
             # Expected columns: '板块名称', '板块代码', ...
-            if '板块代码' not in industry_names_df.columns or '板块名称' not in industry_names_df.columns:
-                logger.error("无法从 ak.stock_board_industry_name_em() 获取板块代码或板块名称。")
+            if (
+                "板块代码" not in industry_names_df.columns
+                or "板块名称" not in industry_names_df.columns
+            ):
+                logger.error(
+                    "无法从 ak.stock_board_industry_name_em() 获取板块代码或板块名称。"
+                )
                 return pd.DataFrame()
-            
+
             logger.info(f"成功获取 {len(industry_names_df)} 个行业板块。")
 
             all_sectors_hist_data = []
             default_start_date_str = "19900101"
-            default_end_date_str = datetime.now().strftime('%Y%m%d')
+            default_end_date_str = datetime.now().strftime("%Y%m%d")
 
             for index, row in industry_names_df.iterrows():
-                sector_code = row['板块代码']
-                sector_name = row['板块名称']
+                sector_code = row["板块代码"]
+                sector_name = row["板块名称"]
                 logger.info(f"正在获取板块 {sector_name} ({sector_code}) 的历史数据...")
 
                 try:
-                    current_start_date = start_date.strftime('%Y%m%d') if start_date else default_start_date_str
-                    current_end_date = end_date.strftime('%Y%m%d') if end_date else default_end_date_str
-                    
+                    current_start_date = (
+                        start_date.strftime("%Y%m%d")
+                        if start_date
+                        else default_start_date_str
+                    )
+                    current_end_date = (
+                        end_date.strftime("%Y%m%d")
+                        if end_date
+                        else default_end_date_str
+                    )
+
                     hist_df = ak.stock_board_industry_hist_em(
-                        symbol=sector_code, 
+                        symbol=sector_code,
                         period="日k",
                         start_date=current_start_date,
                         end_date=current_end_date,
-                        adjust="" # 不复权
+                        adjust="",  # 不复权
                     )
 
                     if hist_df.empty:
-                        logger.warning(f"板块 {sector_name} ({sector_code}) 在指定日期范围 {current_start_date}-{current_end_date} 无历史数据返回。")
+                        logger.warning(
+                            f"板块 {sector_name} ({sector_code}) 在指定日期范围 {current_start_date}-{current_end_date} 无历史数据返回。"
+                        )
                         continue
 
-                    hist_df['sector_id'] = sector_code
-                    hist_df['sector_name'] = sector_name
-                    
+                    hist_df["sector_id"] = sector_code
+                    hist_df["sector_name"] = sector_name
+
                     column_mapping = {
-                        '日期': 'trade_date',
-                        '收盘': 'index_value',
-                        '涨跌幅': 'change_pct_1d',
-                        '成交量': 'volume',
-                        '成交额': 'amount',
-                        '涨跌额': 'change_amount',
-                        '换手率': 'turnover_rate'
+                        "日期": "trade_date",
+                        "收盘": "index_value",
+                        "涨跌幅": "change_pct_1d",
+                        "成交量": "volume",
+                        "成交额": "amount",
+                        "涨跌额": "change_amount",
+                        "换手率": "turnover_rate",
                     }
                     hist_df = hist_df.rename(columns=column_mapping)
 
-                    hist_df['trade_date'] = pd.to_datetime(hist_df['trade_date']).dt.date
-                    
-                    for col in ['index_value', 'change_amount', 'amount']:
-                        if col in hist_df.columns:
-                            hist_df[col] = pd.to_numeric(hist_df[col], errors='coerce')
-                    
-                    for col in ['change_pct_1d', 'turnover_rate']:
-                        if col in hist_df.columns:
-                            hist_df[col] = pd.to_numeric(hist_df[col], errors='coerce') / 100.0
-                    
-                    if 'volume' in hist_df.columns:
-                        hist_df['volume'] = pd.to_numeric(hist_df['volume'], errors='coerce').astype('Int64')
+                    hist_df["trade_date"] = pd.to_datetime(
+                        hist_df["trade_date"]
+                    ).dt.date
 
-                    hist_df = hist_df.sort_values(by='trade_date').reset_index(drop=True)
-                    if 'index_value' in hist_df.columns and not hist_df['index_value'].isnull().all():
-                        hist_df['change_pct_5d'] = hist_df['index_value'].pct_change(periods=5)
-                        hist_df['change_pct_10d'] = hist_df['index_value'].pct_change(periods=10)
+                    for col in ["index_value", "change_amount", "amount"]:
+                        if col in hist_df.columns:
+                            hist_df[col] = pd.to_numeric(hist_df[col], errors="coerce")
+
+                    for col in ["change_pct_1d", "turnover_rate"]:
+                        if col in hist_df.columns:
+                            hist_df[col] = (
+                                pd.to_numeric(hist_df[col], errors="coerce") / 100.0
+                            )
+
+                    if "volume" in hist_df.columns:
+                        hist_df["volume"] = pd.to_numeric(
+                            hist_df["volume"], errors="coerce"
+                        ).astype("Int64")
+
+                    hist_df = hist_df.sort_values(by="trade_date").reset_index(
+                        drop=True
+                    )
+                    if (
+                        "index_value" in hist_df.columns
+                        and not hist_df["index_value"].isnull().all()
+                    ):
+                        hist_df["change_pct_5d"] = hist_df["index_value"].pct_change(
+                            periods=5
+                        )
+                        hist_df["change_pct_10d"] = hist_df["index_value"].pct_change(
+                            periods=10
+                        )
                     else:
-                        hist_df['change_pct_5d'] = np.nan
-                        hist_df['change_pct_10d'] = np.nan
-                        
+                        hist_df["change_pct_5d"] = np.nan
+                        hist_df["change_pct_10d"] = np.nan
+
                     db_columns = [
-                        'sector_id', 'sector_name', 'trade_date', 'index_value', 
-                        'change_pct_1d', 'change_pct_5d', 'change_pct_10d', 
-                        'volume', 'amount', 'change_amount', 'turnover_rate',
-                        'up_down_ratio', 'ranking', 'total_market_cap', 
-                        'riser_count', 'faller_count', 'leader_stock_code', 
-                        'leader_stock_name', 'leader_stock_change_pct'
+                        "sector_id",
+                        "sector_name",
+                        "trade_date",
+                        "index_value",
+                        "change_pct_1d",
+                        "change_pct_5d",
+                        "change_pct_10d",
+                        "volume",
+                        "amount",
+                        "change_amount",
+                        "turnover_rate",
+                        "up_down_ratio",
+                        "ranking",
+                        "total_market_cap",
+                        "riser_count",
+                        "faller_count",
+                        "leader_stock_code",
+                        "leader_stock_name",
+                        "leader_stock_change_pct",
                     ]
                     for col in db_columns:
                         if col not in hist_df.columns:
-                            hist_df[col] = np.nan # Ensure all schema columns exist
-                            
+                            hist_df[col] = np.nan  # Ensure all schema columns exist
+
                     hist_df_to_save = hist_df[db_columns].copy()
                     all_sectors_hist_data.append(hist_df_to_save)
-                    logger.info(f"Processed {len(hist_df_to_save)} records for {sector_name} ({sector_code}).")
+                    logger.info(
+                        f"Processed {len(hist_df_to_save)} records for {sector_name} ({sector_code})."
+                    )
 
                 except Exception as e_inner:
-                    logger.error(f"获取或处理板块 {sector_name} ({sector_code}) 数据失败: {e_inner}", exc_info=False)
+                    logger.error(
+                        f"获取或处理板块 {sector_name} ({sector_code}) 数据失败: {e_inner}",
+                        exc_info=False,
+                    )
                     continue
 
             if not all_sectors_hist_data:
@@ -1074,23 +1190,38 @@ class AKShareData:
             try:
                 logger.info("正在获取概念板块列表...")
                 concept_names_df = ak.stock_board_concept_name_em()
-                if '板块代码' not in concept_names_df.columns or '板块名称' not in concept_names_df.columns:
-                    logger.error("无法从 ak.stock_board_concept_name_em() 获取板块代码或板块名称。")
+                if (
+                    "板块代码" not in concept_names_df.columns
+                    or "板块名称" not in concept_names_df.columns
+                ):
+                    logger.error(
+                        "无法从 ak.stock_board_concept_name_em() 获取板块代码或板块名称。"
+                    )
                 else:
                     logger.info(f"成功获取 {len(concept_names_df)} 个概念板块。")
                     for idx, crow in concept_names_df.iterrows():
-                        concept_code = crow['板块代码']
-                        concept_name = crow['板块名称']
-                        logger.info(f"正在获取概念板块 {concept_name} ({concept_code}) 的历史数据...")
+                        concept_code = crow["板块代码"]
+                        concept_name = crow["板块名称"]
+                        logger.info(
+                            f"正在获取概念板块 {concept_name} ({concept_code}) 的历史数据..."
+                        )
                         try:
-                            current_start_date = start_date.strftime('%Y%m%d') if start_date else default_start_date_str
-                            current_end_date = end_date.strftime('%Y%m%d') if end_date else default_end_date_str
+                            current_start_date = (
+                                start_date.strftime("%Y%m%d")
+                                if start_date
+                                else default_start_date_str
+                            )
+                            current_end_date = (
+                                end_date.strftime("%Y%m%d")
+                                if end_date
+                                else default_end_date_str
+                            )
 
                             chist_df = ak.stock_board_concept_hist_em(
                                 symbol=concept_code,
                                 start_date=current_start_date,
                                 end_date=current_end_date,
-                                adjust=""  # 不复权
+                                adjust="",  # 不复权
                             )
 
                             if chist_df.empty:
@@ -1099,32 +1230,50 @@ class AKShareData:
                                 )
                                 continue
 
-                            chist_df['sector_id'] = concept_code
-                            chist_df['sector_name'] = concept_name
+                            chist_df["sector_id"] = concept_code
+                            chist_df["sector_name"] = concept_name
 
                             # 使用与行业板块相同的列映射
                             chist_df = chist_df.rename(columns=column_mapping)
 
-                            chist_df['trade_date'] = pd.to_datetime(chist_df['trade_date']).dt.date
+                            chist_df["trade_date"] = pd.to_datetime(
+                                chist_df["trade_date"]
+                            ).dt.date
 
-                            for col in ['index_value', 'change_amount', 'amount']:
+                            for col in ["index_value", "change_amount", "amount"]:
                                 if col in chist_df.columns:
-                                    chist_df[col] = pd.to_numeric(chist_df[col], errors='coerce')
+                                    chist_df[col] = pd.to_numeric(
+                                        chist_df[col], errors="coerce"
+                                    )
 
-                            for col in ['change_pct_1d', 'turnover_rate']:
+                            for col in ["change_pct_1d", "turnover_rate"]:
                                 if col in chist_df.columns:
-                                    chist_df[col] = pd.to_numeric(chist_df[col], errors='coerce') / 100.0
+                                    chist_df[col] = (
+                                        pd.to_numeric(chist_df[col], errors="coerce")
+                                        / 100.0
+                                    )
 
-                            if 'volume' in chist_df.columns:
-                                chist_df['volume'] = pd.to_numeric(chist_df['volume'], errors='coerce').astype('Int64')
+                            if "volume" in chist_df.columns:
+                                chist_df["volume"] = pd.to_numeric(
+                                    chist_df["volume"], errors="coerce"
+                                ).astype("Int64")
 
-                            chist_df = chist_df.sort_values(by='trade_date').reset_index(drop=True)
-                            if 'index_value' in chist_df.columns and not chist_df['index_value'].isnull().all():
-                                chist_df['change_pct_5d'] = chist_df['index_value'].pct_change(periods=5)
-                                chist_df['change_pct_10d'] = chist_df['index_value'].pct_change(periods=10)
+                            chist_df = chist_df.sort_values(
+                                by="trade_date"
+                            ).reset_index(drop=True)
+                            if (
+                                "index_value" in chist_df.columns
+                                and not chist_df["index_value"].isnull().all()
+                            ):
+                                chist_df["change_pct_5d"] = chist_df[
+                                    "index_value"
+                                ].pct_change(periods=5)
+                                chist_df["change_pct_10d"] = chist_df[
+                                    "index_value"
+                                ].pct_change(periods=10)
                             else:
-                                chist_df['change_pct_5d'] = np.nan
-                                chist_df['change_pct_10d'] = np.nan
+                                chist_df["change_pct_5d"] = np.nan
+                                chist_df["change_pct_10d"] = np.nan
 
                             for col in db_columns:
                                 if col not in chist_df.columns:
@@ -1142,7 +1291,9 @@ class AKShareData:
                             )
                             continue
             except Exception as e_outer_concept:
-                logger.error(f"获取概念板块列表或历史数据失败: {e_outer_concept}", exc_info=False)
+                logger.error(
+                    f"获取概念板块列表或历史数据失败: {e_outer_concept}", exc_info=False
+                )
 
             if not all_sectors_hist_data:
                 logger.info("没有获取到任何行业板块的历史数据。")
@@ -1151,28 +1302,35 @@ class AKShareData:
             final_df = pd.concat(all_sectors_hist_data, ignore_index=True)
             logger.info(f"总共处理了 {len(final_df)} 条行业板块历史数据记录。")
 
-            final_df.dropna(subset=['trade_date', 'sector_id', 'index_value'], how='any', inplace=True)
+            final_df.dropna(
+                subset=["trade_date", "sector_id", "index_value"],
+                how="any",
+                inplace=True,
+            )
 
             if save and self.engine and not final_df.empty:
                 logger.info(f"开始将 {len(final_df)} 条数据写入数据库 sector_data...")
                 success = upsert_df_to_sql(
-                    final_df, 
-                    "sector_data", 
-                    self.engine, 
-                    unique_columns=['sector_id', 'trade_date']
+                    final_df,
+                    "sector_data",
+                    self.engine,
+                    unique_columns=["sector_id", "trade_date"],
                 )
                 if success:
-                    logger.info(f"行业板块历史数据已成功写入数据库，共影响 {len(final_df)} 条记录的准备。") # upsert might update or insert
+                    logger.info(
+                        f"行业板块历史数据已成功写入数据库，共影响 {len(final_df)} 条记录的准备。"
+                    )  # upsert might update or insert
                 else:
                     logger.error("行业板块历史数据写入数据库失败。")
             elif final_df.empty:
                 logger.info("没有有效数据可写入数据库。")
-            
+
             return final_df
 
         except Exception as e_outer:
             logger.error(f"获取行业板块历史数据主流程失败: {e_outer}", exc_info=True)
             return pd.DataFrame()
+
 
 if __name__ == "__main__":
     from sqlalchemy import create_engine

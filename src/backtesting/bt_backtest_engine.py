@@ -757,7 +757,7 @@ if __name__ == "__main__":
     
     # 运行回测
     config_file = 'config/config.yaml'
-    symbols = ['159998']  # 沪深300ETF, 中证500ETF
+    symbols = ['159998']  
     
     results = run_backtest(
         config_file=config_file,
