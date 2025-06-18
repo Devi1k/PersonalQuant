@@ -55,7 +55,7 @@ class AKShareData:
         if not self.engine:
             logger.warning("数据库引擎初始化失败，数据将无法保存到数据库。")
 
-    def get_etf_list(self, save=True):
+    def get_etf_list(self, save=True, fetch_industry=False):
         """
         获取所有ETF基金列表并写入数据库
 
@@ -111,121 +111,93 @@ class AKShareData:
             # if "volume" in etf_df.columns:
             #     etf_df["volume"] = pd.to_numeric(etf_df["volume"], errors='coerce') * 100
 
-            # 添加ETF行业映射
-            logger.info("开始获取ETF行业映射信息...")
-            etf_df["etf_industry"] = None  # 初始化行业列
+            if fetch_industry:
+                logger.info("开始处理ETF行业映射逻辑...")
+                etf_df["etf_industry"] = etf_df.get("etf_industry") # Ensure column exists, init with None if not
 
-            # 为避免频繁请求API导致被限制，随机选择部分ETF进行行业映射（如果之前没有映射过）
-            # 或者可以考虑使用已有的映射数据，只为新增的ETF添加映射
-            if self.engine:
-                try:
-                    # 获取已有的ETF行业映射
-                    existing_etf_industry = pd.read_sql(
-                        "SELECT code, etf_industry FROM etf_list WHERE etf_industry IS NOT NULL",
-                        self.engine,
-                    )
-                    # 将已有的映射合并到当前数据中
-                    if not existing_etf_industry.empty:
-                        etf_df = etf_df.merge(
-                            existing_etf_industry,
-                            on="code",
-                            how="left",
-                            suffixes=("", "_existing"),
-                        )
-                        # 使用已有的行业映射填充
-                        mask = (
-                            etf_df["etf_industry"].isna()
-                            & etf_df["etf_industry_existing"].notna()
-                        )
-                        etf_df.loc[mask, "etf_industry"] = etf_df.loc[
-                            mask, "etf_industry_existing"
-                        ]
-                        etf_df.drop(columns=["etf_industry_existing"], inplace=True)
-                        logger.info(f"已从数据库加载 {mask.sum()} 个ETF的行业映射")
-                except Exception as e:
-                    logger.warning(f"获取已有ETF行业映射失败: {e}")
-
-            # 获取未映射行业的ETF代码
-            unmapped_etfs = etf_df[etf_df["etf_industry"].isna()].copy()
-
-            # 如果未映射的ETF数量较多，可以限制每次处理的数量
-            # max_process_count = 10  # 每次最多处理10个ETF
-            # if len(unmapped_etfs) > max_process_count:
-            #     unmapped_etfs = unmapped_etfs.sample(max_process_count)
-            #     logger.info(f"本次将为 {max_process_count} 个ETF添加行业映射")
-
-            # 为未映射的ETF添加行业信息
-            from tqdm import tqdm
-            for idx, row in tqdm(unmapped_etfs.iterrows(), total=len(unmapped_etfs), desc="获取ETF行业映射"):
-                etf_code = row["code"]
-                try:
-                    # 1. 获取ETF持仓前十
-                    logger.debug(f"获取ETF {etf_code} ({row['name']}) 的持仓信息")
+                if self.engine:
                     try:
-                        # 使用fund_portfolio_hold_em获取ETF持仓
-                        # get date(year) and symbol with no prefix
-                        symbol = etf_code[2:]
-                        date = datetime.now().year
-                        holdings_df = ak.fund_portfolio_hold_em(
-                            symbol=symbol, date=date
+                        existing_etf_industry = pd.read_sql(
+                            "SELECT code, etf_industry FROM etf_list WHERE etf_industry IS NOT NULL AND etf_industry != ''",
+                            self.engine,
                         )
-                        if holdings_df.empty:
-                            logger.warning(f"ETF {etf_code} ({row['name']}) 无持仓数据")
-                            continue
+                        if not existing_etf_industry.empty:
+                            # Merge existing industry info, prioritizing it
+                            etf_df = etf_df.merge(existing_etf_industry, on='code', how='left', suffixes=('', '_db'))
+                            # Fill 'etf_industry' with '_db' version where 'etf_industry' is NaN or empty, then drop '_db' column
+                            fill_mask = (etf_df['etf_industry'].isna() | (etf_df['etf_industry'] == '')) & etf_df['etf_industry_db'].notna()
+                            etf_df.loc[fill_mask, 'etf_industry'] = etf_df.loc[fill_mask, 'etf_industry_db']
+                            etf_df.drop(columns=['etf_industry_db'], inplace=True)
+                            logger.info(f"已从数据库加载并合并 {fill_mask.sum()} 个ETF的行业映射")
                     except Exception as e:
-                        logger.warning(
-                            f"获取ETF {etf_code} ({row['name']}) 持仓失败: {e}", exc_info=True
-                        )
-                        continue
+                        logger.warning(f"从数据库加载ETF行业映射失败: {e}")
+                
+                # Ensure etf_industry column is initialized if it wasn't there or from DB merge
+                if 'etf_industry' not in etf_df.columns:
+                    etf_df['etf_industry'] = None
+                else:
+                    etf_df['etf_industry'] = etf_df['etf_industry'].fillna('') # Ensure NaNs are empty strings for consistent check
 
-                    # 2. 获取持仓股票的行业信息
-                    industries = []
-                    # 假设持仓数据中股票代码列名为'stock_code'，可能需要根据实际返回调整
-                    stock_code_col = [
-                        col
-                        for col in holdings_df.columns
-                        if "股票代码" in col or "code" in col.lower()
-                    ]
-                    if not stock_code_col:
-                        logger.warning(f"ETF {etf_code} 持仓数据中未找到股票代码列")
-                        continue
+                unmapped_etfs_mask = (etf_df["etf_industry"].isna()) | (etf_df["etf_industry"] == '')
+                unmapped_etfs = etf_df[unmapped_etfs_mask].copy()
 
-                    stock_code_col = stock_code_col[0]
-                    for _, holding in holdings_df.iterrows():
-                        stock_code = holding[stock_code_col]
+                if not unmapped_etfs.empty:
+                    from tqdm import tqdm
+                    from collections import Counter
+                    logger.info(f"准备为 {len(unmapped_etfs)} 个ETF 获取新的行业映射...")
+
+                    for idx, row in tqdm(
+                        unmapped_etfs.iterrows(),
+                        total=len(unmapped_etfs),
+                        desc="获取ETF行业映射",
+                    ):
+                        etf_code = row["code"]
+                        original_etf_idx = row.name # Get original index from etf_df
                         try:
-                            # 获取个股行业信息
-                            stock_info = ak.stock_individual_info_em(symbol=stock_code)
-                            # 假设行业信息在返回的DataFrame中的'industry'列
-                            industry_col = [
-                                col
-                                for col in stock_info.columns
-                                if "所属行业" in col or "industry" in col.lower()
-                            ]
-                            if industry_col:
-                                industry = stock_info.iloc[0][industry_col[0]]
-                                if industry and isinstance(industry, str):
-                                    industries.append(industry)
-                        except Exception as e:
-                            logger.debug(f"获取股票 {stock_code} 行业信息失败: {e}")
+                            logger.debug(f"获取ETF {etf_code} ({row['name']}) 的持仓信息")
+                            holdings_df = pd.DataFrame()
+                            symbol = etf_code[2:] # Assuming etf_code starts with 'sh' or 'sz'
+                            current_year = datetime.now().year
+                            try:
+                                holdings_df = ak.fund_portfolio_hold_em(symbol=symbol, date=str(current_year))
+                            except Exception as e_em:
+                                logger.warning(f"获取ETF {symbol} 持仓(em, {current_year})失败: {e_em}, 尝试去年")
+                                try:
+                                    holdings_df = ak.fund_portfolio_hold_em(symbol=symbol, date=str(current_year - 1))
+                                except Exception as e_em_prev_year:
+                                    logger.error(f"获取ETF {symbol} 持仓(em, {current_year - 1})也失败: {e_em_prev_year}")
+                                    continue # Skip this ETF
 
-                    # 3. 统计最常见的行业
-                    if industries:
-                        from collections import Counter
+                            if holdings_df.empty or '股票代码' not in holdings_df.columns:
+                                logger.warning(f"ETF {etf_code} ({row['name']}) 持仓信息为空或无股票代码列")
+                                continue
 
-                        industry_counter = Counter(industries)
-                        most_common_industry = industry_counter.most_common(1)[0][0]
-                        # 更新ETF的行业信息
-                        etf_df.loc[etf_df["code"] == etf_code, "etf_industry"] = (
-                            most_common_industry
-                        )
-                        logger.info(
-                            f"ETF {etf_code} ({row['name']}) 行业确定为: {most_common_industry}"
-                        )
-                except Exception as e:
-                    logger.warning(
-                        f"处理ETF {etf_code} ({row['name']}) 行业映射时出错: {e}"
-                    )
+                            stock_codes_for_industry = holdings_df["股票代码"].tolist()
+                            if not hasattr(self, 'get_stock_industry'):
+                                logger.error("方法 get_stock_industry 未在 AKShareData 类中定义。跳过行业获取。")
+                                break # Stop processing further ETFs if method is missing
+                            
+                            industries_dict = self.get_stock_industry(stock_codes_for_industry)
+
+                            if industries_dict:
+                                valid_industries = [str(ind) for ind in industries_dict.values() if ind and isinstance(ind, str) and str(ind).strip()]
+                                if valid_industries:
+                                    industry_counts = Counter(valid_industries)
+                                    if industry_counts:
+                                        most_common_industry = industry_counts.most_common(1)[0][0]
+                                        etf_df.loc[original_etf_idx, "etf_industry"] = most_common_industry
+                                        logger.debug(f"ETF {etf_code} ({row['name']}) 的行业定为: {most_common_industry}")
+                                    else:
+                                        logger.warning(f"无法确定ETF {etf_code} ({row['name']}) 的主要行业 (无有效行业计数)")
+                                else:
+                                    logger.warning(f"ETF {etf_code} ({row['name']}) 持仓股票的行业信息均无效或为空")
+                            else:
+                                logger.warning(f"未能获取ETF {etf_code} ({row['name']}) 持仓股票的任何行业信息")
+
+                        except Exception as e_main_loop:
+                            logger.error(f"处理ETF {etf_code} ({row['name']}) 时发生错误: {e_main_loop}", exc_info=False)
+                else:
+                    logger.info("没有需要获取新行业映射的ETF，或所有ETF已有行业信息。")
 
             # 添加获取日期作为更新日期
             etf_df["update_date"] = datetime.now().date()  # 使用 date() 获取日期部分
@@ -321,7 +293,7 @@ class AKShareData:
             return pd.DataFrame()
 
     def get_etf_history(
-        self, code, start_date=None, end_date=None, fields=None, adjust="", save=True
+        self, code, start_date=None, end_date=None, fields=None, adjust="hfq", save=True
     ):
         """
         获取ETF历史行情数据并写入数据库
@@ -357,6 +329,7 @@ class AKShareData:
                 end_date=end_date_req,
                 adjust=adjust,
             )
+            
 
             if df.empty:
                 logger.warning(f"未能获取到 ETF {code} 的历史数据。")
