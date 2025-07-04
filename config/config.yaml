@@ -61,6 +61,7 @@ strategy:
     td_sequence_count: 9
     triangle_support_volume_ratio: 0.8
   trend:
+  # TODO：bb param adjust
     bollinger_period: 20
     bollinger_std_dev: 2.0
     ema_channel_period: 144
@@ -68,13 +69,13 @@ strategy:
     ema_long_period: 200
     ema_short_period: 21
     fast_ma: 3
+    slow_ma: 16
     signal_weights:
       bb_signal: 0
       ema_reversal_signal: 0
       ema_signal: 1
       multi_timeframe_signal: 0
       volume_price_signal: 0
-    slow_ma: 16
     timeframes:
     - 5
     - 10
