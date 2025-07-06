@@ -55,6 +55,64 @@ class AKShareData:
         if not self.engine:
             logger.warning("数据库引擎初始化失败，数据将无法保存到数据库。")
 
+    def _infer_industry_from_name(self, etf_name):
+        """
+        通过ETF名称推断行业分类
+        
+        Parameters
+        ----------
+        etf_name : str
+            ETF名称
+            
+        Returns
+        -------
+        str or None
+            推断的行业名称，如果无法推断则返回None
+        """
+        if not etf_name or not isinstance(etf_name, str):
+            return None
+            
+        etf_name_lower = etf_name.lower()
+        
+        # 定义行业关键词映射
+        industry_keywords = {
+            '科技': ['科技', '技术', '互联网', '软件', '芯片', '半导体', '电子', '通信', '5g', '人工智能', 'ai', '云计算'],
+            '医药生物': ['医药', '生物', '医疗', '健康', '制药', '医学', '疫苗', '基因'],
+            '新能源': ['新能源', '光伏', '风电', '储能', '电池', '锂电', '太阳能', '清洁能源'],
+            '消费': ['消费', '食品', '饮料', '零售', '商贸', '白酒', '家电', '纺织', '服装'],
+            '金融': ['金融', '银行', '保险', '证券', '信托', '基金'],
+            '地产': ['地产', '房地产', '建筑', '装修', '家居'],
+            '汽车': ['汽车', '车', '新能源车', '智能汽车'],
+            '军工': ['军工', '国防', '航空', '航天', '兵器'],
+            '有色金属': ['有色', '金属', '钢铁', '铜', '铝', '锌', '镍'],
+            '化工': ['化工', '石化', '塑料', '橡胶', '化学'],
+            '农业': ['农业', '种植', '养殖', '农产品', '粮食'],
+            '传媒': ['传媒', '文化', '娱乐', '游戏', '影视', '广告'],
+            '环保': ['环保', '环境', '污水', '垃圾', '节能'],
+            '交通运输': ['交通', '运输', '物流', '航运', '港口', '机场'],
+            '公用事业': ['公用', '水务', '燃气', '电力', '供热'],
+        }
+        
+        # 遍历关键词映射，寻找匹配
+        for industry, keywords in industry_keywords.items():
+            for keyword in keywords:
+                if keyword in etf_name_lower:
+                    logger.debug(f"通过关键词 '{keyword}' 将ETF '{etf_name}' 归类为 '{industry}'")
+                    return industry
+        
+        # 特殊处理一些常见的ETF类型
+        if any(word in etf_name_lower for word in ['沪深300', '中证500', '创业板', '科创板', '上证50']):
+            return '综合指数'
+        
+        if any(word in etf_name_lower for word in ['债券', '债', '国债', '企债']):
+            return '债券'
+            
+        if any(word in etf_name_lower for word in ['货币', '现金', '理财']):
+            return '货币基金'
+        
+        logger.debug(f"无法通过名称推断ETF '{etf_name}' 的行业")
+        return None
+
     def get_etf_list(self, save=True, fetch_industry=False):
         """
         获取所有ETF基金列表并写入数据库
@@ -158,44 +216,182 @@ class AKShareData:
                             holdings_df = pd.DataFrame()
                             symbol = etf_code[2:] # Assuming etf_code starts with 'sh' or 'sz'
                             current_year = datetime.now().year
-                            try:
-                                holdings_df = ak.fund_portfolio_hold_em(symbol=symbol, date=str(current_year))
-                            except Exception as e_em:
-                                logger.warning(f"获取ETF {symbol} 持仓(em, {current_year})失败: {e_em}, 尝试去年")
+                            
+                            # 定义一个内部函数来处理持仓数据获取和验证
+                            def get_and_validate_holdings(symbol, year):
                                 try:
-                                    holdings_df = ak.fund_portfolio_hold_em(symbol=symbol, date=str(current_year - 1))
-                                except Exception as e_em_prev_year:
-                                    logger.error(f"获取ETF {symbol} 持仓(em, {current_year - 1})也失败: {e_em_prev_year}")
-                                    continue # Skip this ETF
+                                    df = ak.fund_portfolio_hold_em(symbol=symbol, date=str(year))
+                                    
+                                    # 基本验证
+                                    if df.empty:
+                                        raise ValueError("返回的持仓数据为空")
+                                    
+                                    # 检查必要的列是否存在
+                                    required_columns = ['股票代码']
+                                    missing_columns = [col for col in required_columns if col not in df.columns]
+                                    if missing_columns:
+                                        raise ValueError(f"缺少必要的列: {missing_columns}")
+                                    
+                                    # 检查股票代码列是否有有效数据
+                                    valid_stock_codes = df['股票代码'].dropna()
+                                    if valid_stock_codes.empty:
+                                        raise ValueError("股票代码列没有有效数据")
+                                    
+                                    # 检查是否有占净值比例相关的列
+                                    ratio_columns = ['占净值比例', '占净值 比例', '持仓占比', '占比', '市值占比']
+                                    ratio_col_found = None
+                                    for col in ratio_columns:
+                                        if col in df.columns:
+                                            ratio_col_found = col
+                                            break
+                                    
+                                    if ratio_col_found is None:
+                                        logger.warning(f"ETF {symbol} 持仓数据中未找到占净值比例相关列，可用列: {list(df.columns)}")
+                                        # 如果没有占净值比例列，我们仍然可以使用股票代码来获取行业信息
+                                    else:
+                                        logger.debug(f"ETF {symbol} 使用列 '{ratio_col_found}' 作为占净值比例")
+                                    
+                                    return df
+                                    
+                                except Exception as e:
+                                    # 更详细的错误分类
+                                    error_msg = str(e).lower()
+                                    if 'keyerror' in error_msg or '占净值比例' in error_msg:
+                                        raise ValueError(f"数据格式错误，可能缺少占净值比例字段: {e}")
+                                    elif 'timeout' in error_msg or 'connection' in error_msg:
+                                        raise ConnectionError(f"网络连接错误: {e}")
+                                    elif 'not found' in error_msg or '404' in error_msg:
+                                        raise ValueError(f"未找到该基金的持仓数据: {e}")
+                                    else:
+                                        raise e
+                            
+                            # 尝试获取当年数据
+                            try:
+                                holdings_df = get_and_validate_holdings(symbol, current_year)
+                            except (ValueError, ConnectionError, KeyError) as e_current:
+                                logger.warning(f"获取ETF {symbol} 持仓({current_year})失败: {e_current}, 尝试去年")
+                                try:
+                                    holdings_df = get_and_validate_holdings(symbol, current_year - 1)
+                                    logger.info(f"成功获取ETF {symbol} 去年({current_year - 1})的持仓数据")
+                                except Exception as e_prev:
+                                    logger.error(f"获取ETF {symbol} 持仓({current_year - 1})也失败: {e_prev}")
+                                    # 尝试使用ETF名称推断行业作为最后的备用方案
+                                    etf_name = row['name']
+                                    inferred_industry = self._infer_industry_from_name(etf_name)
+                                    if inferred_industry:
+                                        etf_df.loc[original_etf_idx, "etf_industry"] = inferred_industry
+                                        logger.info(f"ETF {etf_code} ({etf_name}) 无法获取持仓数据，通过名称推断行业为: {inferred_industry}")
+                                    continue # Skip to next ETF
 
                             if holdings_df.empty or '股票代码' not in holdings_df.columns:
                                 logger.warning(f"ETF {etf_code} ({row['name']}) 持仓信息为空或无股票代码列")
+                                # 尝试使用ETF名称推断行业
+                                etf_name = row['name']
+                                inferred_industry = self._infer_industry_from_name(etf_name)
+                                if inferred_industry:
+                                    etf_df.loc[original_etf_idx, "etf_industry"] = inferred_industry
+                                    logger.info(f"ETF {etf_code} ({etf_name}) 持仓数据无效，通过名称推断行业为: {inferred_industry}")
                                 continue
 
                             stock_codes_for_industry = holdings_df["股票代码"].tolist()
-                            if not hasattr(self, 'get_stock_industry'):
-                                logger.error("方法 get_stock_industry 未在 AKShareData 类中定义。跳过行业获取。")
-                                break # Stop processing further ETFs if method is missing
+                            if not stock_codes_for_industry:
+                                logger.warning(f"ETF {etf_code} ({row['name']}) 持仓中没有股票代码")
+                                continue
+                                
+                            # 使用 akshare.stock_individual_info_em 获取股票行业信息
+                            industries_dict = {}
+                            # 限制前10只股票以提高效率，并添加更好的错误处理
+                            max_stocks_to_check = min(10, len(stock_codes_for_industry))
+                            successful_queries = 0
                             
-                            industries_dict = self.get_stock_industry(stock_codes_for_industry)
-
+                            for i, stock_code in enumerate(stock_codes_for_industry[:max_stocks_to_check]):
+                                try:
+                                    # 清理股票代码，确保格式正确
+                                    clean_stock_code = str(stock_code).strip()
+                                    if not clean_stock_code or clean_stock_code == 'nan':
+                                        logger.debug(f"跳过无效的股票代码: {stock_code}")
+                                        continue
+                                        
+                                    # 获取股票基本信息，包含行业信息
+                                    stock_info = ak.stock_individual_info_em(symbol=clean_stock_code)
+                                    if not stock_info.empty and "value" in stock_info.columns and "item" in stock_info.columns:
+                                        # 查找行业信息行
+                                        industry_row = stock_info[stock_info["item"] == "行业"]
+                                        if not industry_row.empty:
+                                            industry = industry_row["value"].iloc[0]
+                                            if industry and str(industry).strip() and str(industry).strip() != 'nan':
+                                                industries_dict[clean_stock_code] = str(industry).strip()
+                                                successful_queries += 1
+                                                logger.debug(f"股票 {clean_stock_code} 行业: {industry}")
+                                            else:
+                                                logger.debug(f"股票 {clean_stock_code} 行业信息为空")
+                                        else:
+                                            logger.debug(f"股票 {clean_stock_code} 未找到行业信息行")
+                                    else:
+                                        logger.debug(f"股票 {clean_stock_code} 返回的信息格式不正确")
+                                        
+                                except Exception as e:
+                                    logger.warning(f"获取股票 {clean_stock_code} 行业信息失败: {e}")
+                                    continue
+                                    
+                            logger.debug(f"ETF {etf_code} 成功获取了 {successful_queries}/{max_stocks_to_check} 只股票的行业信息")
+                            
+                            # industries_dict 已在上面获取完成
                             if industries_dict:
-                                valid_industries = [str(ind) for ind in industries_dict.values() if ind and isinstance(ind, str) and str(ind).strip()]
+                                valid_industries = [str(ind) for ind in industries_dict.values() if ind and isinstance(ind, str) and str(ind).strip() and str(ind).strip() != 'nan']
                                 if valid_industries:
                                     industry_counts = Counter(valid_industries)
                                     if industry_counts:
                                         most_common_industry = industry_counts.most_common(1)[0][0]
                                         etf_df.loc[original_etf_idx, "etf_industry"] = most_common_industry
-                                        logger.debug(f"ETF {etf_code} ({row['name']}) 的行业定为: {most_common_industry}")
+                                        logger.info(f"ETF {etf_code} ({row['name']}) 的行业定为: {most_common_industry} (基于 {len(valid_industries)} 只股票)")
+                                        
+                                        # 记录行业分布情况，便于调试
+                                        if len(industry_counts) > 1:
+                                            top_industries = industry_counts.most_common(3)
+                                            logger.debug(f"ETF {etf_code} 行业分布: {top_industries}")
                                     else:
                                         logger.warning(f"无法确定ETF {etf_code} ({row['name']}) 的主要行业 (无有效行业计数)")
+                                        # 尝试使用ETF名称推断行业
+                                        etf_name = row['name']
+                                        inferred_industry = self._infer_industry_from_name(etf_name)
+                                        if inferred_industry:
+                                            etf_df.loc[original_etf_idx, "etf_industry"] = inferred_industry
+                                            logger.info(f"ETF {etf_code} ({etf_name}) 通过名称推断行业为: {inferred_industry}")
                                 else:
                                     logger.warning(f"ETF {etf_code} ({row['name']}) 持仓股票的行业信息均无效或为空")
+                                    # 尝试使用ETF名称推断行业
+                                    etf_name = row['name']
+                                    inferred_industry = self._infer_industry_from_name(etf_name)
+                                    if inferred_industry:
+                                        etf_df.loc[original_etf_idx, "etf_industry"] = inferred_industry
+                                        logger.info(f"ETF {etf_code} ({etf_name}) 通过名称推断行业为: {inferred_industry}")
                             else:
                                 logger.warning(f"未能获取ETF {etf_code} ({row['name']}) 持仓股票的任何行业信息")
+                                # 尝试使用ETF名称推断行业
+                                etf_name = row['name']
+                                inferred_industry = self._infer_industry_from_name(etf_name)
+                                if inferred_industry:
+                                    etf_df.loc[original_etf_idx, "etf_industry"] = inferred_industry
+                                    logger.info(f"ETF {etf_code} ({etf_name}) 通过名称推断行业为: {inferred_industry}")
 
                         except Exception as e_main_loop:
-                            logger.error(f"处理ETF {etf_code} ({row['name']}) 时发生错误: {e_main_loop}", exc_info=False)
+                            logger.error(f"处理ETF {etf_code} ({row['name']}) 时发生未预期的错误: {e_main_loop}", exc_info=False)
+                            # 作为最后的备用方案，尝试通过名称推断行业
+                            try:
+                                etf_name = row['name']
+                                inferred_industry = self._infer_industry_from_name(etf_name)
+                                if inferred_industry:
+                                    etf_df.loc[original_etf_idx, "etf_industry"] = inferred_industry
+                                    logger.info(f"ETF {etf_code} ({etf_name}) 发生错误后通过名称推断行业为: {inferred_industry}")
+                            except Exception as e_fallback:
+                                logger.error(f"ETF {etf_code} 备用方案也失败: {e_fallback}")
+                                
+                    # 统计处理结果
+                    processed_count = len(unmapped_etfs)
+                    successful_count = len(etf_df[(etf_df['etf_industry'].notna()) & (etf_df['etf_industry'] != '')])
+                    failed_count = processed_count - successful_count
+                    logger.info(f"ETF行业映射处理完成: 处理了 {processed_count} 个ETF，成功映射 {successful_count} 个，失败 {failed_count} 个")
                 else:
                     logger.info("没有需要获取新行业映射的ETF，或所有ETF已有行业信息。")
 
@@ -278,7 +474,7 @@ class AKShareData:
         logger.info("开始获取所有ETF列表 (通过 get_etf_list)...")
         try:
             # 直接调用 get_etf_list，它会处理数据库写入
-            all_etfs = self.get_etf_list(save=save)  # 传递 save 参数
+            all_etfs = self.get_etf_list(save=save, fetch_industry=True)  # 传递 save 参数
 
             # --- 移除冗余的 CSV 保存 ---
             # if save:
@@ -819,7 +1015,7 @@ class AKShareData:
         result = {}
 
         # 1. 获取 ETF 列表 (get_etf_list 内部处理保存)
-        etf_list_df = self.get_etf_list(save=save)
+        etf_list_df = self.get_etf_list(save=save,fetch_industry=True)
         result["etf_list"] = etf_list_df
 
         # 2. 获取 ETF 指标数据 (get_etf_indicator 内部处理保存)
