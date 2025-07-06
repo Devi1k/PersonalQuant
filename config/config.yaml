@@ -70,10 +70,15 @@ strategy:
     ema_short_period: 21
     fast_ma: 3
     slow_ma: 16
+    # MACD 参数
+    macd_fast_period: 12
+    macd_slow_period: 26
+    macd_signal_period: 9
     signal_weights:
       bb_signal: 0
       ema_reversal_signal: 0
       ema_signal: 1
+      macd_signal: 2.0
       multi_timeframe_signal: 0
       volume_price_signal: 0
     timeframes:

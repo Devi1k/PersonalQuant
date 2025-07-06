@@ -61,6 +61,11 @@ class TrendStrategy:
         self.ema_short_period = trend_config.get('ema_short_period', 21)
         self.ema_long_period = trend_config.get('ema_long_period', 200)
         
+        # MACD参数
+        self.macd_fast_period = trend_config.get('macd_fast_period', 12)
+        self.macd_slow_period = trend_config.get('macd_slow_period', 26)
+        self.macd_signal_period = trend_config.get('macd_signal_period', 9)
+        
         # 多维周期参数
         self.timeframes = trend_config.get('timeframes', [5, 15, 60])
         
@@ -80,6 +85,7 @@ class TrendStrategy:
         default_weights = {
             'bb_signal': 2.0,            # 布林带信号权重提高（趋势跟踪核心指标）
             'ema_signal': 2.5,          # EMA信号权重提高（趋势跟踪核心指标）
+            'macd_signal': 2.0,          # MACD信号权重（趋势跟踪核心指标）
             'multi_timeframe_signal': 3.0, # 多周期信号权重最高（优化入场点）
             'ema_reversal_signal': 1.5,   # 反转信号权重适中（风险对冲）
             'volume_price_signal': 1.0    # 成交量确认信号
@@ -89,6 +95,7 @@ class TrendStrategy:
         logger.info(f"趋势策略初始化完成，参数：快速MA={self.fast_ma}, 慢速MA={self.slow_ma}, "
                    f"布林带周期={self.bollinger_period}, 布林带标准差={self.bollinger_std_dev}, "
                    f"EMA短期={self.ema_short_period}, EMA长期={self.ema_long_period}, "
+                   f"MACD参数=({self.macd_fast_period}, {self.macd_slow_period}, {self.macd_signal_period}), "
                    f"EMA通道周期={self.ema_channel_period}, 成交量阈值={self.volume_threshold}")
     
     def bollinger_bands_breakout(self, df):
@@ -264,117 +271,223 @@ class TrendStrategy:
         
         return result_df
     
-    def multi_timeframe_strategy(self, df_5min, df_15min, df_60min):
+    def macd_signal(self, df):
         """
-        多维周期组合策略（5分钟/15分钟/60分钟）
+        MACD指标分析功能
+        
+        实现 DIF、DEA、MACD 柱线的计算和金叉死叉判断
+        - 计算DIF, DEA, MACD柱线
+        - 判断DIF线与DEA线是否均在0轴上方运行
+        - 判断近期是否发生金叉，或金叉后红柱是否持续
         
         Parameters
         ----------
-        df_5min : pandas.DataFrame
-            5分钟K线数据
-        df_15min : pandas.DataFrame
-            15分钟K线数据
-        df_60min : pandas.DataFrame
-            60分钟K线数据
+        df : pandas.DataFrame
+            包含价格数据的数据框
             
         Returns
         -------
         pandas.DataFrame
-            添加了多维周期组合信号的数据框（基于5分钟K线）
+            添加了MACD信号的数据框
         """
-        if df_5min.empty or df_15min.empty or df_60min.empty:
+        if df.empty:
             logger.warning("输入的数据为空")
-            return df_5min
+            return df
         
         # 确保必要的列存在
-        required_cols = ["date", "close", "ma_5", "ma_20", "volume", "volume_ma_5"]
-        for df, timeframe in [(df_5min, "5分钟"), (df_15min, "15分钟"), (df_60min, "60分钟")]:
-            missing_cols = [col for col in required_cols if col not in df.columns]
-            if missing_cols:
-                logger.error(f"{timeframe}K线数据缺失必要的列: {missing_cols}")
-                return df_5min
+        required_cols = ["date", "close"]
+        missing_cols = [col for col in required_cols if col not in df.columns]
+        if missing_cols:
+            logger.error(f"MACD策略所需的列缺失: {missing_cols}")
+            return df
         
-        logger.info("开始计算多维周期组合策略信号")
+        logger.info("开始计算MACD信号")
         
         # 复制数据，避免修改原始数据
-        result_df = df_5min.copy()
+        result_df = df.copy()
         
-        # 计算各个周期的趋势信号
-        # 使用5日和20日移动平均线判断趋势
-        
-        # 5分钟周期趋势
-        df_5min['trend'] = 0
-        df_5min.loc[df_5min['ma_5'] > df_5min['ma_20'], 'trend'] = 1  # 上升趋势
-        df_5min.loc[df_5min['ma_5'] < df_5min['ma_20'], 'trend'] = -1  # 下降趋势
-        
-        # 15分钟周期趋势
-        df_15min['trend'] = 0
-        df_15min.loc[df_15min['ma_5'] > df_15min['ma_20'], 'trend'] = 1  # 上升趋势
-        df_15min.loc[df_15min['ma_5'] < df_15min['ma_20'], 'trend'] = -1  # 下降趋势
-        
-        # 60分钟周期趋势
-        df_60min['trend'] = 0
-        df_60min.loc[df_60min['ma_5'] > df_60min['ma_20'], 'trend'] = 1  # 上升趋势
-        df_60min.loc[df_60min['ma_5'] < df_60min['ma_20'], 'trend'] = -1  # 下降趋势
-        
-        # 将15分钟和60分钟的趋势信号合并到5分钟数据中
-        # 需要根据时间戳进行匹配
-        
-        # 确保日期列为datetime类型
-        for df in [result_df, df_15min, df_60min]:
-            if 'date' in df.columns and not pd.api.types.is_datetime64_any_dtype(df['date']):
-                df['date'] = pd.to_datetime(df['date'])
-        
-        # 创建用于合并的辅助列
-        result_df['date_15min'] = result_df['date'].apply(
-            lambda x: x.replace(minute=(x.minute // 15) * 15, second=0, microsecond=0)
+        # 使用talib计算MACD指标
+        macd_dif, macd_dea, macd_histogram = talib.MACD(
+            result_df['close'].values,
+            fastperiod=self.macd_fast_period,
+            slowperiod=self.macd_slow_period,
+            signalperiod=self.macd_signal_period
         )
         
-        result_df['date_60min'] = result_df['date'].apply(
-            lambda x: x.replace(minute=0, second=0, microsecond=0)
+        # 添加MACD指标到数据框
+        result_df['macd_dif'] = macd_dif
+        result_df['macd_dea'] = macd_dea
+        result_df['macd_histogram'] = macd_histogram
+        
+        # 计算MACD信号
+        # 1. 判断DIF和DEA是否均在0轴上方
+        result_df['macd_above_zero'] = (result_df['macd_dif'] > 0) & (result_df['macd_dea'] > 0)
+        
+        # 2. 判断是否发生金叉（DIF从下方穿过DEA）
+        result_df['macd_golden_cross'] = (
+            (result_df['macd_dif'] > result_df['macd_dea']) &
+            (result_df['macd_dif'].shift(1) <= result_df['macd_dea'].shift(1))
         )
         
-        # 准备15分钟和60分钟的趋势数据用于合并
-        df_15min_trend = df_15min[['date', 'trend']].rename(
-            columns={'date': 'date_15min', 'trend': 'trend_15min'}
+        # 3. 判断是否发生死叉（DIF从上方穿过DEA）
+        result_df['macd_death_cross'] = (
+            (result_df['macd_dif'] < result_df['macd_dea']) &
+            (result_df['macd_dif'].shift(1) >= result_df['macd_dea'].shift(1))
         )
         
-        df_60min_trend = df_60min[['date', 'trend']].rename(
-            columns={'date': 'date_60min', 'trend': 'trend_60min'}
+        # 4. 判断MACD柱线是否为红柱（正值）且持续
+        result_df['macd_red_bar'] = result_df['macd_histogram'] > 0
+        result_df['macd_green_bar'] = result_df['macd_histogram'] < 0
+        
+        # 5. 判断红柱是否持续（连续2个周期以上）
+        result_df['macd_red_continuing'] = (
+            (result_df['macd_red_bar']) &
+            (result_df['macd_red_bar'].shift(1))
         )
         
-        # 合并趋势数据
-        result_df = pd.merge(result_df, df_15min_trend, on='date_15min', how='left')
-        result_df = pd.merge(result_df, df_60min_trend, on='date_60min', how='left')
+        # 6. 判断绿柱是否持续（连续2个周期以上）
+        result_df['macd_green_continuing'] = (
+            (result_df['macd_green_bar']) &
+            (result_df['macd_green_bar'].shift(1))
+        )
         
-        # 填充可能的缺失值
-        result_df['trend_15min'] = result_df['trend_15min'].fillna(0)
-        result_df['trend_60min'] = result_df['trend_60min'].fillna(0)
+        # 初始化MACD信号列
+        result_df['macd_signal'] = 0
         
-        # 重命名5分钟趋势列
-        result_df.rename(columns={'trend': 'trend_5min'}, inplace=True)
+        # 买入信号条件：
+        # 1. DIF和DEA均在0轴上方 且 发生金叉
+        # 2. 或者 DIF和DEA均在0轴上方 且 红柱持续
+        buy_condition_1 = result_df['macd_above_zero'] & result_df['macd_golden_cross']
+        buy_condition_2 = result_df['macd_above_zero'] & result_df['macd_red_continuing']
         
-        # 计算综合趋势得分 (-3 到 3)
-        result_df['trend_score'] = result_df['trend_5min'] + result_df['trend_15min'] + result_df['trend_60min']
+        result_df.loc[buy_condition_1 | buy_condition_2, 'macd_signal'] = 1
         
-        # 计算多维周期组合信号
-        # 1 = 买入信号（趋势得分 >= 2，即至少两个周期为上升趋势）
-        # -1 = 卖出信号（趋势得分 <= -2，即至少两个周期为下降趋势）
-        # 0 = 无信号
+        # 卖出信号条件：
+        # 1. DIF和DEA均在0轴下方 且 发生死叉
+        # 2. 或者 DIF和DEA均在0轴下方 且 绿柱持续
+        sell_condition_1 = (~result_df['macd_above_zero']) & result_df['macd_death_cross']
+        sell_condition_2 = (~result_df['macd_above_zero']) & result_df['macd_green_continuing']
         
-        result_df['multi_timeframe_signal'] = 0
-        result_df.loc[result_df['trend_score'] >= 2, 'multi_timeframe_signal'] = 1
-        result_df.loc[result_df['trend_score'] <= -2, 'multi_timeframe_signal'] = -1
+        result_df.loc[sell_condition_1 | sell_condition_2, 'macd_signal'] = -1
         
         # 统计信号数量
-        buy_signals = (result_df['multi_timeframe_signal'] == 1).sum()
-        sell_signals = (result_df['multi_timeframe_signal'] == -1).sum()
-        logger.info(f"多维周期组合策略信号计算完成，买入信号: {buy_signals}个, 卖出信号: {sell_signals}个")
-        
-        # 删除辅助列
-        result_df.drop(['date_15min', 'date_60min'], axis=1, inplace=True)
+        buy_signals = (result_df['macd_signal'] == 1).sum()
+        sell_signals = (result_df['macd_signal'] == -1).sum()
+        logger.info(f"MACD信号计算完成，买入信号: {buy_signals}个, 卖出信号: {sell_signals}个")
         
         return result_df
+    
+    # def multi_timeframe_strategy(self, df_5min, df_15min, df_60min):
+    #     """
+    #     多维周期组合策略（5分钟/15分钟/60分钟）
+        
+    #     Parameters
+    #     ----------
+    #     df_5min : pandas.DataFrame
+    #         5分钟K线数据
+    #     df_15min : pandas.DataFrame
+    #         15分钟K线数据
+    #     df_60min : pandas.DataFrame
+    #         60分钟K线数据
+            
+    #     Returns
+    #     -------
+    #     pandas.DataFrame
+    #         添加了多维周期组合信号的数据框（基于5分钟K线）
+    #     """
+    #     if df_5min.empty or df_15min.empty or df_60min.empty:
+    #         logger.warning("输入的数据为空")
+    #         return df_5min
+        
+    #     # 确保必要的列存在
+    #     required_cols = ["date", "close", "ma_5", "ma_20", "volume", "volume_ma_5"]
+    #     for df, timeframe in [(df_5min, "5分钟"), (df_15min, "15分钟"), (df_60min, "60分钟")]:
+    #         missing_cols = [col for col in required_cols if col not in df.columns]
+    #         if missing_cols:
+    #             logger.error(f"{timeframe}K线数据缺失必要的列: {missing_cols}")
+    #             return df_5min
+        
+    #     logger.info("开始计算多维周期组合策略信号")
+        
+    #     # 复制数据，避免修改原始数据
+    #     result_df = df_5min.copy()
+        
+    #     # 计算各个周期的趋势信号
+    #     # 使用5日和20日移动平均线判断趋势
+        
+    #     # 5分钟周期趋势
+    #     df_5min['trend'] = 0
+    #     df_5min.loc[df_5min['ma_5'] > df_5min['ma_20'], 'trend'] = 1  # 上升趋势
+    #     df_5min.loc[df_5min['ma_5'] < df_5min['ma_20'], 'trend'] = -1  # 下降趋势
+        
+    #     # 15分钟周期趋势
+    #     df_15min['trend'] = 0
+    #     df_15min.loc[df_15min['ma_5'] > df_15min['ma_20'], 'trend'] = 1  # 上升趋势
+    #     df_15min.loc[df_15min['ma_5'] < df_15min['ma_20'], 'trend'] = -1  # 下降趋势
+        
+    #     # 60分钟周期趋势
+    #     df_60min['trend'] = 0
+    #     df_60min.loc[df_60min['ma_5'] > df_60min['ma_20'], 'trend'] = 1  # 上升趋势
+    #     df_60min.loc[df_60min['ma_5'] < df_60min['ma_20'], 'trend'] = -1  # 下降趋势
+        
+    #     # 将15分钟和60分钟的趋势信号合并到5分钟数据中
+    #     # 需要根据时间戳进行匹配
+        
+    #     # 确保日期列为datetime类型
+    #     for df in [result_df, df_15min, df_60min]:
+    #         if 'date' in df.columns and not pd.api.types.is_datetime64_any_dtype(df['date']):
+    #             df['date'] = pd.to_datetime(df['date'])
+        
+    #     # 创建用于合并的辅助列
+    #     result_df['date_15min'] = result_df['date'].apply(
+    #         lambda x: x.replace(minute=(x.minute // 15) * 15, second=0, microsecond=0)
+    #     )
+        
+    #     result_df['date_60min'] = result_df['date'].apply(
+    #         lambda x: x.replace(minute=0, second=0, microsecond=0)
+    #     )
+        
+    #     # 准备15分钟和60分钟的趋势数据用于合并
+    #     df_15min_trend = df_15min[['date', 'trend']].rename(
+    #         columns={'date': 'date_15min', 'trend': 'trend_15min'}
+    #     )
+        
+    #     df_60min_trend = df_60min[['date', 'trend']].rename(
+    #         columns={'date': 'date_60min', 'trend': 'trend_60min'}
+    #     )
+        
+    #     # 合并趋势数据
+    #     result_df = pd.merge(result_df, df_15min_trend, on='date_15min', how='left')
+    #     result_df = pd.merge(result_df, df_60min_trend, on='date_60min', how='left')
+        
+    #     # 填充可能的缺失值
+    #     result_df['trend_15min'] = result_df['trend_15min'].fillna(0)
+    #     result_df['trend_60min'] = result_df['trend_60min'].fillna(0)
+        
+    #     # 重命名5分钟趋势列
+    #     result_df.rename(columns={'trend': 'trend_5min'}, inplace=True)
+        
+    #     # 计算综合趋势得分 (-3 到 3)
+    #     result_df['trend_score'] = result_df['trend_5min'] + result_df['trend_15min'] + result_df['trend_60min']
+        
+    #     # 计算多维周期组合信号
+    #     # 1 = 买入信号（趋势得分 >= 2，即至少两个周期为上升趋势）
+    #     # -1 = 卖出信号（趋势得分 <= -2，即至少两个周期为下降趋势）
+    #     # 0 = 无信号
+        
+    #     result_df['multi_timeframe_signal'] = 0
+    #     result_df.loc[result_df['trend_score'] >= 2, 'multi_timeframe_signal'] = 1
+    #     result_df.loc[result_df['trend_score'] <= -2, 'multi_timeframe_signal'] = -1
+        
+    #     # 统计信号数量
+    #     buy_signals = (result_df['multi_timeframe_signal'] == 1).sum()
+    #     sell_signals = (result_df['multi_timeframe_signal'] == -1).sum()
+    #     logger.info(f"多维周期组合策略信号计算完成，买入信号: {buy_signals}个, 卖出信号: {sell_signals}个")
+        
+    #     # 删除辅助列
+    #     result_df.drop(['date_15min', 'date_60min'], axis=1, inplace=True)
+        
+    #     return result_df
     
     def ema_channel_reversal(self, df):
         """
@@ -622,6 +735,9 @@ class TrendStrategy:
         # if 'ema_fast' in df.columns and 'ema_slow' in df.columns:
         df = self.ema_crossover_signal(df)
         
+        # 生成MACD信号
+        df = self.macd_signal(df)
+        
         # 生成EMA通道反转信号
         if 'ema_144' in df.columns and 'ema_144_upper' in df.columns and 'ema_144_lower' in df.columns:
             df = self.ema_channel_reversal(df)
@@ -632,7 +748,7 @@ class TrendStrategy:
         
         # 确保必要的信号列存在
         signal_cols = [
-            'bb_signal', 'ema_signal', 'multi_timeframe_signal',
+            'bb_signal', 'ema_signal', 'macd_signal', 'multi_timeframe_signal',
             'ema_reversal_signal', 'volume_price_signal'
         ]
         
@@ -648,8 +764,8 @@ class TrendStrategy:
         result_df = df.copy()
         
         # 按照策略类型分组
-        # trend_signals = ['ema_signal', 'bb_signal']
-        trend_signals = ['ema_signal']
+        # trend_signals = ['ema_signal', 'bb_signal', 'macd_signal']
+        trend_signals = ['ema_signal', 'macd_signal']
         # trend_signals = ['bb_signal']
 
         multi_tf_signals = ['multi_timeframe_signal']

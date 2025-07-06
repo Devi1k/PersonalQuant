@@ -997,52 +997,52 @@ class AKShareData:
             logger.error(f"获取或处理市场情绪指标数据失败: {e}", exc_info=True)
             return {}
 
-    def get_all_data(
-        self, start_date=None, end_date=None, etf_codes=None, save=True
-    ):  # 添加 save 参数
-        """
-        获取所有需要的数据并写入数据库
-        """
-        # 设置默认日期
-        start_date_req = start_date  # 保留原始格式用于日志
-        end_date_req = end_date
-        if start_date is None:
-            start_date_req = (datetime.now() - timedelta(days=365)).strftime("%Y-%m-%d")
-        if end_date is None:
-            end_date_req = datetime.now().strftime("%Y-%m-%d")
+    # def get_all_data(
+    #     self, start_date=None, end_date=None, etf_codes=None, save=True
+    # ):  # 添加 save 参数
+    #     """
+    #     获取所有需要的数据并写入数据库
+    #     """
+    #     # 设置默认日期
+    #     start_date_req = start_date  # 保留原始格式用于日志
+    #     end_date_req = end_date
+    #     if start_date is None:
+    #         start_date_req = (datetime.now() - timedelta(days=365)).strftime("%Y-%m-%d")
+    #     if end_date is None:
+    #         end_date_req = datetime.now().strftime("%Y-%m-%d")
 
-        logger.info(f"开始获取所有数据，是否保存到数据库: {save}")
-        result = {}
+    #     logger.info(f"开始获取所有数据，是否保存到数据库: {save}")
+    #     result = {}
 
-        # 1. 获取 ETF 列表 (get_etf_list 内部处理保存)
-        etf_list_df = self.get_etf_list(save=save,fetch_industry=True)
-        result["etf_list"] = etf_list_df
+    #     # 1. 获取 ETF 列表 (get_etf_list 内部处理保存)
+    #     etf_list_df = self.get_etf_list(save=save,fetch_industry=True)
+    #     result["etf_list"] = etf_list_df
 
-        # 2. 获取 ETF 指标数据 (get_etf_indicator 内部处理保存)
-        etf_indicator = self.get_etf_indicator(
-            etf_codes if etf_codes else etf_list_df["ts_code"].tolist(),
-            start_date,
-            end_date,
-            save=save,
-        )
-        result["etf_indicator"] = etf_indicator
+    #     # 2. 获取 ETF 指标数据 (get_etf_indicator 内部处理保存)
+    #     etf_indicator = self.get_etf_indicator(
+    #         etf_codes if etf_codes else etf_list_df["ts_code"].tolist(),
+    #         start_date,
+    #         end_date,
+    #         save=save,
+    #     )
+    #     result["etf_indicator"] = etf_indicator
 
-        # 3. 获取市场概览数据 (暂未实现)
-        # market_overview = self.get_market_overview(save=save)
-        # result['market_overview'] = market_overview
+    #     # 3. 获取市场概览数据 (暂未实现)
+    #     # market_overview = self.get_market_overview(save=save)
+    #     # result['market_overview'] = market_overview
 
-        # 4. 获取行业资金流向 (get_industry_fund_flow 内部处理保存)
-        fund_flow = self.get_industry_fund_flow(save=save)
-        result["fund_flow"] = fund_flow
+    #     # 4. 获取行业资金流向 (get_industry_fund_flow 内部处理保存)
+    #     fund_flow = self.get_industry_fund_flow(save=save)
+    #     result["fund_flow"] = fund_flow
 
-        # 5. 获取最新的市场情绪指标 (get_market_sentiment 内部处理保存)
-        sentiment = self.get_market_sentiment(
-            date="2024-04-12", save=True
-        )  # 使用一个过去的交易日测试
-        result["sentiment"] = sentiment
+    #     # 5. 获取最新的市场情绪指标 (get_market_sentiment 内部处理保存)
+    #     sentiment = self.get_market_sentiment(
+    #         date="2024-04-12", save=True
+    #     )  # 使用一个过去的交易日测试
+    #     result["sentiment"] = sentiment
 
-        logger.info("所有数据获取完成")
-        return result
+    #     logger.info("所有数据获取完成")
+    #     return result
 
     # def get_etf_minute_kline(
     #     self, code, period=5, start_date=None, end_date=None, save=True
