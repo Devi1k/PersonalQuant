@@ -76,6 +76,17 @@ class TrendStrategy:
         # 成交量阈值
         self.volume_threshold = trend_config.get('volume_threshold', 1.2)
         
+        # 价格形态识别参数
+        self.channel_period = trend_config.get('channel_period', 30)  # 上升通道周期
+        self.channel_slope_threshold = trend_config.get('channel_slope_threshold', 0.001)  # 通道斜率阈值
+        self.channel_width_threshold = trend_config.get('channel_width_threshold', 0.02)  # 通道宽度阈值
+        self.breakout_resistance_period = trend_config.get('breakout_resistance_period', 60)  # 突破阻力位周期
+        self.breakout_volume_multiplier = trend_config.get('breakout_volume_multiplier', 1.5)  # 突破量能倍数
+        self.breakout_confirmation_days = trend_config.get('breakout_confirmation_days', 2)  # 突破确认天数
+        self.head_risk_peak_period = trend_config.get('head_risk_peak_period', 60)  # 顶部风险高点周期
+        self.rsi_period = trend_config.get('rsi_period', 14)  # RSI周期
+        self.volume_sma_period = trend_config.get('volume_sma_period', 20)  # 成交量均线周期
+        
         # 策略类型仓位权重
         self.trend_weight = trend_config.get('trend_weight', 0.7)  # 趋势跟踪 (60-80%)
         self.multi_tf_weight = trend_config.get('multi_tf_weight', 0.25)  # 多周期策略 (20-30%)
@@ -96,7 +107,9 @@ class TrendStrategy:
                    f"布林带周期={self.bollinger_period}, 布林带标准差={self.bollinger_std_dev}, "
                    f"EMA短期={self.ema_short_period}, EMA长期={self.ema_long_period}, "
                    f"MACD参数=({self.macd_fast_period}, {self.macd_slow_period}, {self.macd_signal_period}), "
-                   f"EMA通道周期={self.ema_channel_period}, 成交量阈值={self.volume_threshold}")
+                   f"EMA通道周期={self.ema_channel_period}, 成交量阈值={self.volume_threshold}, "
+                   f"通道周期={self.channel_period}, 突破阻力位周期={self.breakout_resistance_period}, "
+                   f"顶部风险高点周期={self.head_risk_peak_period}")
     
     def bollinger_bands_breakout(self, df):
         """
@@ -580,11 +593,23 @@ class TrendStrategy:
     
     def volume_price_confirmation(self, df):
         """
-        量价确认策略
+        基于四个阶段的量价关系细化分析系统
         
-        包含两种确认信号：
-        1. 量价齐升确认（成交量>5日均量*阈值且价格上涨）- 买入信号
-        2. 量增价跌确认（成交量>5日均量*阈值且价格下跌）- 卖出信号
+        核心思想：将成交量与价格的不同阶段（上涨、下跌、盘整、突破）结合起来分析
+        
+        量价关系细化规则：
+        1. 上涨阶段 (Uptrend Phase):
+           - 健康状态 (加分): 价涨量增 - 量价配合
+           - 警示状态 (减分): 价涨量缩 - 追高意愿不足，可能是上涨末期
+           - 警示状态 (减分): 价滞量增 - 主力可能在出货
+        
+        2. 突破阶段 (Breakout Phase):
+           - 强信号 (强力加分): 价升量增 - 突破伴随成交量显著放大(>1.5倍均量)
+           - 假信号 (减分/无效): 价升量缩 - 假突破概率高
+        
+        3. 回调/盘整阶段 (Consolidation Phase):
+           - 健康状态 (加分/观望): 价跌量缩 - 洗盘而非出货，未来买入机会
+           - 警示状态 (减分): 价跌量增 - 恐慌盘或主力出货，趋势可能反转
         
         Parameters
         ----------
@@ -601,105 +626,755 @@ class TrendStrategy:
             return df
         
         # 确保必要的列存在
-        required_cols = ["date", "close", "volume", "volume_ma_5"]
+        required_cols = ["date", "close", "high", "low", "volume"]
         missing_cols = [col for col in required_cols if col not in df.columns]
         if missing_cols:
             logger.error(f"量价确认策略所需的列缺失: {missing_cols}")
             return df
         
-        logger.info("开始计算量价确认信号")
+        logger.info("开始计算基于四个阶段的量价关系分析")
         
         # 复制数据，避免修改原始数据
         result_df = df.copy()
         
-        # 计算价格变化
-        result_df['price_change'] = result_df['close'].pct_change()
+        # ===== 第一步：基础指标计算 =====
+        result_df = self._calculate_basic_volume_price_indicators(result_df)
         
-        # 计算成交量是否超过5日均量的阈值
-        result_df['volume_surge'] = result_df['volume'] > (result_df['volume_ma_5'] * self.volume_threshold)
+        # ===== 第二步：市场阶段识别 =====
+        result_df = self._identify_simplified_market_phases(result_df)
         
-        # 计算量价确认信号
-        # 1 = 买入信号（价格上涨且成交量放大）
-        # -1 = 卖出信号（价格下跌且成交量放大）
-        # 0 = 无信号
+        # TODO： 优化调用关系，不要全量调用，按阶段确定对应的分析函数
+        # ===== 第三步：分阶段量价分析 =====
+        result_df = self._analyze_uptrend_volume_price(result_df)
+        result_df = self._analyze_breakout_volume_price(result_df)
+        result_df = self._analyze_consolidation_volume_price(result_df)
         
-        result_df['volume_price_signal'] = 0
+        # ===== 第四步：综合量价信号生成 =====
+        result_df = self._generate_final_volume_price_signal(result_df)
         
-        # 量价齐升确认 - 买入信号
-        result_df.loc[(result_df['price_change'] > 0) &
-                      (result_df['volume_surge']), 'volume_price_signal'] = 1
-                      
-        # 量增价跌确认 - 卖出信号
-        result_df.loc[(result_df['price_change'] < 0) &
-                      (result_df['volume_surge']), 'volume_price_signal'] = -1
+        # 计算量价分析质量评分
+        total_periods = len(result_df)
+        valid_analysis_periods = (result_df['volume_price_signal'] != 0).sum()
+        analysis_coverage = valid_analysis_periods / total_periods if total_periods > 0 else 0
         
-        # 统计信号数量
-        buy_signals = (result_df['volume_price_signal'] == 1).sum()
-        sell_signals = (result_df['volume_price_signal'] == -1).sum()
-        logger.info(f"量价确认信号计算完成，买入信号: {buy_signals}个, 卖出信号: {sell_signals}个")
+        # 各阶段识别统计
+        uptrend_periods = (result_df['market_phase'] == 'uptrend').sum()
+        breakout_periods = (result_df['market_phase'] == 'breakout').sum()
+        consolidation_periods = (result_df['market_phase'] == 'consolidation').sum()
+        retracement_periods = (result_df['market_phase'] == 'retracement').sum()
+        
+        # 量价分析质量评分
+        avg_signal_strength = abs(result_df['volume_price_signal']).mean()
+        max_signal_strength = abs(result_df['volume_price_signal']).max()
+        
+        logger.info(f"=== 四阶段量价分析评估 ===")
+        logger.info(f"分析覆盖率: {analysis_coverage:.2%} ({valid_analysis_periods}/{total_periods})")
+        logger.info(f"阶段分布 - 上涨: {uptrend_periods}, 突破: {breakout_periods}, 盘整: {consolidation_periods}, 回调: {retracement_periods}")
+        logger.info(f"量价分析质量 - 平均强度: {avg_signal_strength:.3f}, 最大强度: {max_signal_strength:.3f}")
+        logger.info(f"分析完成，生成量价评分列: volume_price_signal")
         
         return result_df
     
-    def close_price_execution(self, df, signal_col):
-        """
-        K线收盘价交易执行（减少滑点冲击）
+    def _calculate_basic_volume_price_indicators(self, df):
+        """计算基础量价指标"""
+        try:
+            # 价格变化指标
+            df['price_change'] = df['close'].pct_change()
+            df['price_change_3d'] = df['close'].pct_change(3)
+            df['price_change_5d'] = df['close'].pct_change(5)
+            
+            # 成交量均线和比率
+            df['volume_ma_20'] = df['volume'].rolling(window=20, min_periods=1).mean()
+            df['volume_ratio_20d'] = df['volume'] / df['volume_ma_20']
+            
+            # 价格阻力和支撑水平（用于判断突破）
+            df['resistance_level'] = df['high'].rolling(window=20, min_periods=1).max()
+            df['support_level'] = df['low'].rolling(window=20, min_periods=1).min()
+            df['price_position'] = (df['close'] - df['support_level']) / (df['resistance_level'] - df['support_level'])
+            
+            # 价格趋势方向（简化版）
+            df['price_trend_3d'] = np.where(df['price_change_3d'] > 0.01, 1,
+                                          np.where(df['price_change_3d'] < -0.01, -1, 0))
+            
+            return df
+            
+        except Exception as e:
+            logger.error(f"计算基础量价指标时发生错误: {e}")
+            return df
+    
+    def _identify_simplified_market_phases(self, df):
+        """简化的市场阶段识别 - 专注于四个关键阶段"""
+        try:
+            # 初始化阶段标识
+            df['market_phase'] = 'consolidation'  # 默认为盘整
+            
+            # 1. 突破阶段（最高优先级）
+            breakout_conditions = (
+                (df['close'] > df['resistance_level'].shift(1)) &  # 突破前期阻力
+                (df['price_change'] > 0.01)  # 当日上涨超过1%
+            )
+            
+            # 2. 上涨阶段
+            uptrend_conditions = (
+                (df['price_change_5d'] > 0.02) &  # 5日涨幅超过2%
+                (df['price_trend_3d'] == 1) &    # 3日趋势向上
+                (df['price_position'] > 0.5)     # 价格位置在上半部
+            ) & (~breakout_conditions)  # 排除突破阶段
+            
+            # 3. 回调阶段
+            retracement_conditions = (
+                (df['price_change_3d'] < -0.01) &  # 3日跌幅超过1%
+                (df['price_trend_3d'] == -1)       # 3日趋势向下
+            ) & (~breakout_conditions) & (~uptrend_conditions)  # 排除其他阶段
+            
+            # 设置阶段标识（按优先级顺序）
+            df.loc[breakout_conditions, 'market_phase'] = 'breakout'
+            df.loc[uptrend_conditions, 'market_phase'] = 'uptrend'
+            df.loc[retracement_conditions, 'market_phase'] = 'retracement'
+            
+            return df
+            
+        except Exception as e:
+            logger.error(f"识别市场阶段时发生错误: {e}")
+            return df
+    
+    def _analyze_uptrend_volume_price(self, df):
+        """上涨阶段量价分析
         
-        处理信号并设置执行价格，但不计算仓位。
-        信号含义：
-        - 1.0: 买入信号
-        - 0.5: 试探性买入信号
-        - 0: 无操作
-        - -0.5: 减仓信号
-        - -1.0: 卖出信号
+        上涨阶段 (Uptrend Phase):
+        - 健康状态 (加分): 价涨量增 - 量价配合
+        - 警示状态 (减分): 价涨量缩 - 追高意愿不足，可能是上涨末期
+        - 警示状态 (减分): 价滞量增 - 主力可能在出货
+        """
+        try:
+            df['uptrend_vp_score'] = 0.0
+            
+            # 仅在上涨阶段进行分析
+            uptrend_mask = (df['market_phase'] == 'uptrend')
+            
+            # 1. 健康状态：价涨量增（量价配合）- 加分
+            healthy_uptrend = (
+                uptrend_mask &
+                (df['price_change'] > 0) &           # 价格上涨
+                (df['volume_ratio_20d'] > 1.2)       # 成交量温和放大（大于20日均量）
+            )
+            df.loc[healthy_uptrend, 'uptrend_vp_score'] = 0.6  # 强力加分
+            
+            # 2. 警示状态：价涨量缩（追高意愿不足）- 减分
+            warning_uptrend_shrink = (
+                uptrend_mask &
+                (df['price_change'] > 0) &           # 价格继续上涨
+                (df['volume_ratio_20d'] < 0.8)       # 成交量开始萎缩
+            )
+            df.loc[warning_uptrend_shrink, 'uptrend_vp_score'] = -0.4  # 警示减分
+            
+            # 3. 警示状态：价滞量增（主力出货）- 减分
+            warning_stagnant_volume = (
+                uptrend_mask &
+                (df['price_position'] > 0.8) &       # 价格在高位
+                (abs(df['price_change']) < 0.005) &  # 价格盘整/滞涨
+                (df['volume_ratio_20d'] > 1.5)       # 放出巨量
+            )
+            df.loc[warning_stagnant_volume, 'uptrend_vp_score'] = -0.5  # 强警示减分
+            
+            return df
+            
+        except Exception as e:
+            logger.error(f"分析上涨阶段量价关系时发生错误: {e}")
+            return df
+    
+    def _analyze_breakout_volume_price(self, df):
+        """突破阶段量价分析
+        
+        突破阶段 (Breakout Phase):
+        - 强信号 (强力加分): 价升量增 - 突破伴随成交量显著放大(>1.5倍均量)
+        - 假信号 (减分/无效): 价升量缩 - 假突破概率高
+        """
+        try:
+            df['breakout_vp_score'] = 0.0
+            
+            # 仅在突破阶段进行分析
+            breakout_mask = (df['market_phase'] == 'breakout')
+            
+            # 1. 强信号：价升量增（最可靠的买入信号）- 强力加分
+            strong_breakout = (
+                breakout_mask &
+                (df['price_change'] > 0.01) &        # 价格上升
+                (df['volume_ratio_20d'] > 1.5)       # 成交量显著放大（>1.5倍均量）
+            )
+            df.loc[strong_breakout, 'breakout_vp_score'] = 0.8  # 最强信号
+            
+            # 2. 假信号：价升量缩（假突破）- 减分/无效
+            false_breakout = (
+                breakout_mask &
+                (df['price_change'] > 0.01) &        # 价格上升
+                (df['volume_ratio_20d'] < 0.9)       # 成交量萎缩，无量配合
+            )
+            df.loc[false_breakout, 'breakout_vp_score'] = -0.6  # 假突破警告
+            
+            return df
+            
+        except Exception as e:
+            logger.error(f"分析突破阶段量价关系时发生错误: {e}")
+            return df
+    
+    def _analyze_consolidation_volume_price(self, df):
+        """回调/盘整阶段量价分析
+        
+        回调/盘整阶段 (Consolidation Phase):
+        - 健康状态 (加分/观望): 价跌量缩 - 洗盘而非出货，未来买入机会
+        - 警示状态 (减分): 价跌量增 - 恐慌盘或主力出货，趋势可能反转
+        """
+        try:
+            df['consolidation_vp_score'] = 0.0
+            
+            # 回调阶段和盘整阶段都包含在内
+            consolidation_mask = (df['market_phase'].isin(['retracement', 'consolidation']))
+            
+            # 1. 健康状态：价跌量缩（洗盘）- 加分/观望（未来买入机会）
+            healthy_retracement = (
+                consolidation_mask &
+                (df['price_change'] < 0) &           # 价格下跌
+                (df['volume_ratio_20d'] < 0.8) &     # 成交量收缩
+                (df['price_position'] > 0.3)         # 仍在支撑之上
+            )
+            df.loc[healthy_retracement, 'consolidation_vp_score'] = 0.3  # 观望等待机会
+            
+            # 2. 警示状态：价跌量增（恐慌盘或主力出货）- 减分
+            warning_sell_off = (
+                consolidation_mask &
+                (df['price_change'] < -0.01) &       # 价格明显下跌
+                (df['volume_ratio_20d'] > 1.2)       # 成交量放大（恐慌盘或出货）
+            )
+            df.loc[warning_sell_off, 'consolidation_vp_score'] = -0.4  # 趋势可能反转
+            
+            # 3. 盘整阶段的健康积累形态
+            healthy_accumulation = (
+                (df['market_phase'] == 'consolidation') &
+                (abs(df['price_change']) < 0.005) &  # 价格横盘
+                (df['volume_ratio_20d'] > 1.0) &     # 成交量高于平均（积累）
+                (df['price_position'] > 0.4) & (df['price_position'] < 0.6)  # 中位盘整
+            )
+            df.loc[healthy_accumulation, 'consolidation_vp_score'] = 0.2  # 积累信号
+            
+            return df
+            
+        except Exception as e:
+            logger.error(f"分析回调/盘整阶段量价关系时发生错误: {e}")
+            return df
+    
+    def _generate_final_volume_price_signal(self, df):
+        """生成最终量价信号
+        
+        综合四个阶段的量价分析结果，生成简洁明确的量价确认信号
+        """
+        try:
+            # 初始化信号
+            df['volume_price_signal'] = 0.0
+            
+            # 确保各阶段评分列存在
+            if 'uptrend_vp_score' not in df.columns:
+                df['uptrend_vp_score'] = 0.0
+            if 'breakout_vp_score' not in df.columns:
+                df['breakout_vp_score'] = 0.0
+            if 'consolidation_vp_score' not in df.columns:
+                df['consolidation_vp_score'] = 0.0
+            
+            # 基于市场阶段的加权综合
+            phase_weights = {
+                'breakout': 0.5,        # 突破阶段权重最高
+                'uptrend': 0.3,         # 上涨阶段次之
+                'consolidation': 0.15,  # 盘整阶段观望
+                'retracement': 0.15     # 回调阶段观望
+            }
+            
+            # 计算综合评分
+            for phase, weight in phase_weights.items():
+                phase_mask = (df['market_phase'] == phase)
+                
+                if phase == 'breakout':
+                    df.loc[phase_mask, 'volume_price_signal'] += df.loc[phase_mask, 'breakout_vp_score'] * weight
+                elif phase == 'uptrend':
+                    df.loc[phase_mask, 'volume_price_signal'] += df.loc[phase_mask, 'uptrend_vp_score'] * weight
+                else:  # consolidation, retracement
+                    df.loc[phase_mask, 'volume_price_signal'] += df.loc[phase_mask, 'consolidation_vp_score'] * weight
+            
+            # 信号强度分级
+            df['vp_signal_strength'] = np.select([
+                abs(df['volume_price_signal']) >= 0.3,  # 强信号
+                abs(df['volume_price_signal']) >= 0.15, # 中等信号
+                abs(df['volume_price_signal']) >= 0.05  # 弱信号
+            ], ['强', '中', '弱'], default='无')
+            
+            # 信号方向描述
+            df['vp_signal_direction'] = np.select([
+                df['volume_price_signal'] > 0.15,   # 明确买入
+                df['volume_price_signal'] > 0.05,   # 偏向买入
+                df['volume_price_signal'] < -0.15,  # 明确卖出
+                df['volume_price_signal'] < -0.05,  # 偏向卖出
+            ], ['买入', '偏多', '卖出', '偏空'], default='中性')
+            
+            return df
+            
+        except Exception as e:
+            logger.error(f"生成最终量价信号时发生错误: {e}")
+            return df
+    
+    # ===== 价格形态识别系统 =====
+    
+    def detect_ascending_channel(self, df):
+        """
+        检测上升通道（优先级3）
+        
+        计算滚动N日最高价/最低价移动平均线作为上下轨道
+        验证正斜率（线性回归系数 > 0.001）
+        确认当前价格位于轨道之间
         
         Parameters
         ----------
         df : pandas.DataFrame
-            包含价格和信号数据的数据框
-        signal_col : str
-            信号列的名称
+            包含OHLCV数据的数据框
             
         Returns
         -------
-        pandas.DataFrame
-            添加了收盘价交易执行信号的数据框
+        tuple
+            (channel_status, in_channel, channel_width, slope_upper, slope_lower)
+            channel_status: 1(上升), 0(中性), -1(下降)
+            in_channel: 价格是否在通道内
+            channel_width: 通道宽度百分比
+            slope_upper: 上轨斜率
+            slope_lower: 下轨斜率
         """
-        if df.empty:
-            logger.warning("输入的数据为空")
-            return df
+        try:
+            if len(df) < self.channel_period:
+                logger.warning(f"数据长度不足，需要至少{self.channel_period}个周期")
+                return 0, False, 0, 0, 0
+            
+            # 计算滚动最高价和最低价移动平均线
+            upper_rail = df['high'].rolling(window=self.channel_period, min_periods=1).max()
+            lower_rail = df['low'].rolling(window=self.channel_period, min_periods=1).min()
+            
+            # 使用线性回归计算斜率
+            def calculate_slope(series):
+                if len(series) < 2:
+                    return 0
+                x = np.arange(len(series))
+                y = series.values
+                # 过滤NaN值
+                mask = ~np.isnan(y)
+                if np.sum(mask) < 2:
+                    return 0
+                slope = np.polyfit(x[mask], y[mask], 1)[0]
+                return slope
+            
+            # 计算上轨和下轨的斜率
+            slope_upper = calculate_slope(upper_rail.tail(self.channel_period))
+            slope_lower = calculate_slope(lower_rail.tail(self.channel_period))
+            
+            # 获取当前价格
+            current_price = df['close'].iloc[-1]
+            current_upper = upper_rail.iloc[-1]
+            current_lower = lower_rail.iloc[-1]
+            
+            # 验证价格是否在通道内
+            in_channel = current_lower <= current_price <= current_upper
+            
+            # 计算通道宽度百分比
+            channel_width = (current_upper - current_lower) / current_price
+            
+            # 判断通道状态
+            channel_status = 0
+            if (slope_upper > self.channel_slope_threshold and
+                slope_lower > self.channel_slope_threshold and
+                channel_width > self.channel_width_threshold):
+                channel_status = 1  # 上升通道
+            elif (slope_upper < -self.channel_slope_threshold and
+                  slope_lower < -self.channel_slope_threshold and
+                  channel_width > self.channel_width_threshold):
+                channel_status = -1  # 下降通道
+            
+            return channel_status, in_channel, channel_width, slope_upper, slope_lower
+            
+        except Exception as e:
+            logger.error(f"检测上升通道时发生错误: {e}")
+            return 0, False, 0, 0, 0
+    
+    def detect_breakout_pattern(self, df):
+        """
+        检测突破形态（优先级2）
         
-        # 确保必要的列存在
-        required_cols = ["date", "close", signal_col]
-        missing_cols = [col for col in required_cols if col not in df.columns]
-        if missing_cols:
-            logger.error(f"收盘价交易执行策略所需的列缺失: {missing_cols}")
-            return df
+        识别阻力位并检测首次突破
+        验证成交量放大和突破确认
         
-        logger.info(f"开始计算收盘价交易执行信号，基于信号列: {signal_col}")
+        Parameters
+        ----------
+        df : pandas.DataFrame
+            包含OHLCV数据的数据框
+            
+        Returns
+        -------
+        tuple
+            (breakout_signal, breakout_strength, resistance_level, volume_confirmed)
+            breakout_signal: 突破信号布尔值
+            breakout_strength: 突破强度评分(0-1)
+            resistance_level: 阻力位价格
+            volume_confirmed: 成交量确认布尔值
+        """
+        try:
+            if len(df) < self.breakout_resistance_period:
+                logger.warning(f"数据长度不足，需要至少{self.breakout_resistance_period}个周期")
+                return False, 0, 0, False
+            
+            # 计算阻力位（滚动最高价）
+            resistance_level = df['high'].rolling(window=self.breakout_resistance_period, min_periods=1).max().iloc[-1]
+            
+            # 获取当前和前一日收盘价
+            current_close = df['close'].iloc[-1]
+            previous_close = df['close'].iloc[-2] if len(df) >= 2 else current_close
+            
+            # 检测首次突破
+            first_time_breakout = (current_close > resistance_level and
+                                 previous_close <= resistance_level)
+            
+            # 计算成交量均线
+            if 'volume' in df.columns:
+                volume_sma = df['volume'].rolling(window=self.volume_sma_period, min_periods=1).mean()
+                current_volume = df['volume'].iloc[-1]
+                volume_threshold = volume_sma.iloc[-1] * self.breakout_volume_multiplier
+                volume_confirmed = current_volume > volume_threshold
+            else:
+                volume_confirmed = False
+                logger.warning("缺少成交量数据，无法进行成交量确认")
+            
+            # 突破确认（需要连续N天收盘价高于阻力位）
+            if len(df) >= self.breakout_confirmation_days:
+                recent_closes = df['close'].tail(self.breakout_confirmation_days)
+                breakout_sustained = all(close > resistance_level for close in recent_closes)
+            else:
+                breakout_sustained = current_close > resistance_level
+            
+            # 计算突破强度
+            breakout_strength = 0
+            if first_time_breakout:
+                # 基于价格突破幅度和成交量放大程度计算强度
+                price_strength = min((current_close - resistance_level) / resistance_level * 10, 0.5)
+                volume_strength = 0.3 if volume_confirmed else 0
+                confirmation_strength = 0.2 if breakout_sustained else 0
+                breakout_strength = price_strength + volume_strength + confirmation_strength
+            
+            breakout_signal = first_time_breakout and volume_confirmed and breakout_sustained
+            
+            return breakout_signal, breakout_strength, resistance_level, volume_confirmed
+            
+        except Exception as e:
+            logger.error(f"检测突破形态时发生错误: {e}")
+            return False, 0, 0, False
+    
+    def detect_head_risk_signals(self, df):
+        """
+        检测顶部风险信号（优先级1）
         
-        # 复制数据，避免修改原始数据
-        result_df = df.copy()
+        通过MACD和RSI背离以及成交量确认检测顶部风险
         
-        # 创建执行价格列
-        result_df['execution_price'] = np.nan
+        Parameters
+        ----------
+        df : pandas.DataFrame
+            包含OHLCV和技术指标数据的数据框
+            
+        Returns
+        -------
+        tuple
+            (head_risk_signal, risk_intensity, macd_divergence, rsi_divergence, volume_decline)
+            head_risk_signal: 顶部风险信号布尔值
+            risk_intensity: 风险强度评分(0-1)
+            macd_divergence: MACD背离布尔值
+            rsi_divergence: RSI背离布尔值
+            volume_decline: 成交量下降布尔值
+        """
+        try:
+            if len(df) < self.head_risk_peak_period:
+                logger.warning(f"数据长度不足，需要至少{self.head_risk_peak_period}个周期")
+                return False, 0, False, False, False
+            
+            # 计算MACD（如果不存在）
+            if 'macd_dif' not in df.columns:
+                df = self.macd_signal(df)
+            
+            # 计算RSI（如果不存在）
+            if 'rsi' not in df.columns:
+                df['rsi'] = talib.RSI(df['close'], timeperiod=self.rsi_period)
+            
+            # 寻找价格高点
+            recent_data = df.tail(self.head_risk_peak_period)
+            price_peaks = []
+            macd_dif_at_peaks = []
+            rsi_at_peaks = []
+            
+            # 使用滚动窗口找到局部高点
+            for i in range(2, len(recent_data) - 2):
+                if (recent_data['high'].iloc[i] > recent_data['high'].iloc[i-1] and
+                    recent_data['high'].iloc[i] > recent_data['high'].iloc[i-2] and
+                    recent_data['high'].iloc[i] > recent_data['high'].iloc[i+1] and
+                    recent_data['high'].iloc[i] > recent_data['high'].iloc[i+2]):
+                    
+                    price_peaks.append(recent_data['high'].iloc[i])
+                    macd_dif_at_peaks.append(recent_data['macd_dif'].iloc[i])
+                    rsi_at_peaks.append(recent_data['rsi'].iloc[i])
+            
+            # 检测MACD背离
+            macd_divergence = False
+            if len(price_peaks) >= 2:
+                # 价格创新高但MACD DIF未创新高
+                latest_price_peak = price_peaks[-1]
+                previous_price_peak = price_peaks[-2]
+                latest_macd_dif = macd_dif_at_peaks[-1]
+                previous_macd_dif = macd_dif_at_peaks[-2]
+                
+                if (latest_price_peak > previous_price_peak and
+                    latest_macd_dif < previous_macd_dif):
+                    macd_divergence = True
+            
+            # 检测RSI背离
+            rsi_divergence = False
+            if len(price_peaks) >= 2:
+                latest_rsi = rsi_at_peaks[-1]
+                previous_rsi = rsi_at_peaks[-2]
+                
+                if (price_peaks[-1] > price_peaks[-2] and
+                    latest_rsi < previous_rsi):
+                    rsi_divergence = True
+            
+            # 检测成交量下降
+            volume_decline = False
+            if 'volume' in df.columns and len(df) >= 10:
+                recent_volume = df['volume'].tail(5).mean()
+                earlier_volume = df['volume'].tail(10).head(5).mean()
+                volume_decline = recent_volume < earlier_volume * 0.8
+            
+            # 计算风险强度
+            risk_intensity = 0
+            if macd_divergence:
+                risk_intensity += 0.4
+            if rsi_divergence:
+                risk_intensity += 0.3
+            if volume_decline:
+                risk_intensity += 0.3
+            
+            # 顶部风险信号触发条件
+            head_risk_signal = macd_divergence and (rsi_divergence or volume_decline)
+            
+            return head_risk_signal, risk_intensity, macd_divergence, rsi_divergence, volume_decline
+            
+        except Exception as e:
+            logger.error(f"检测顶部风险信号时发生错误: {e}")
+            return False, 0, False, False, False
+    
+    def calculate_pattern_score(self, head_risk, breakout_signal, channel_status, in_channel):
+        """
+        计算形态评分（严格分层逻辑）
         
-        # 对于有信号的K线，使用收盘价作为执行价格
-        result_df.loc[result_df[signal_col] != 0, 'execution_price'] = result_df.loc[result_df[signal_col] != 0, 'close']
+        Parameters
+        ----------
+        head_risk : bool
+            顶部风险信号
+        breakout_signal : bool
+            突破信号
+        channel_status : int
+            通道状态：1(上升), 0(中性), -1(下降)
+        in_channel : bool
+            价格是否在通道内
+            
+        Returns
+        -------
+        dict
+            包含状态、评分、优先级的字典
+        """
+        try:
+            # 优先级1：顶部风险（否决权）
+            if head_risk:
+                return {
+                    "status": "顶部风险",
+                    "score": -2,
+                    "priority": 1,
+                    "description": "检测到顶部风险信号，建议减仓或观望"
+                }
+            
+            # 优先级2：突破信号
+            if breakout_signal:
+                return {
+                    "status": "放量突破",
+                    "score": +2,
+                    "priority": 2,
+                    "description": "检测到放量突破信号，建议买入"
+                }
+            
+            # 优先级3：上升通道
+            if channel_status == 1 and in_channel:
+                return {
+                    "status": "上升通道",
+                    "score": +1,
+                    "priority": 3,
+                    "description": "价格处于上升通道内，趋势向好"
+                }
+            
+            # 优先级4：形态不明
+            return {
+                "status": "形态不明",
+                "score": 0,
+                "priority": 4,
+                "description": "无明确形态信号，建议观望"
+            }
+            
+        except Exception as e:
+            logger.error(f"计算形态评分时发生错误: {e}")
+            return {
+                "status": "计算错误",
+                "score": 0,
+                "priority": 5,
+                "description": f"计算过程中出现错误: {e}"
+            }
+    
+    def analyze_price_patterns(self, df):
+        """
+        主要形态分析入口函数
         
-        # 创建执行信号列（与原信号相同）
-        execution_col = f"{signal_col}_execution"
-        result_df[execution_col] = result_df[signal_col]
+        执行完整的价格形态识别流程
         
-        # 统计信号数量和类型
-        full_buy = (result_df[execution_col] == 1).sum()
-        small_buy = (result_df[execution_col] == 0.5).sum()
-        reduce = (result_df[execution_col] == -0.5).sum()
-        full_sell = (result_df[execution_col] == -1).sum()
-        
-        logger.info(f"收盘价交易执行信号计算完成，完全买入: {full_buy}个, 试探性买入: {small_buy}个, "
-                   f"减仓: {reduce}个, 完全卖出: {full_sell}个")
-        
-        return result_df
+        Parameters
+        ----------
+        df : pandas.DataFrame
+            包含OHLCV数据和技术指标的数据框
+            
+        Returns
+        -------
+        dict
+            包含所有形态分析结果的字典
+        """
+        try:
+            # 数据验证
+            if df.empty:
+                logger.warning("输入数据为空")
+                return self._empty_pattern_result()
+            
+            if len(df) < 60:
+                logger.warning("数据长度不足60个周期，形态识别可能不准确")
+            
+            # 必要列检查
+            required_cols = ['date', 'open', 'high', 'low', 'close']
+            missing_cols = [col for col in required_cols if col not in df.columns]
+            if missing_cols:
+                logger.error(f"缺少必要的数据列: {missing_cols}")
+                return self._empty_pattern_result()
+            
+            logger.info("开始执行价格形态识别分析")
+            
+            # 1. 检测上升通道
+            channel_status, in_channel, channel_width, slope_upper, slope_lower = self.detect_ascending_channel(df)
+            
+            # 2. 检测突破形态
+            breakout_signal, breakout_strength, resistance_level, volume_confirmed = self.detect_breakout_pattern(df)
+            
+            # 3. 检测顶部风险
+            head_risk_signal, risk_intensity, macd_divergence, rsi_divergence, volume_decline = self.detect_head_risk_signals(df)
+            
+            # 4. 计算形态评分
+            pattern_score = self.calculate_pattern_score(head_risk_signal, breakout_signal, channel_status, in_channel)
+            
+            # 5. 组织结果
+            result = {
+                # 形态评分
+                "pattern_score": pattern_score["score"],
+                "pattern_status": pattern_score["status"],
+                "pattern_priority": pattern_score["priority"],
+                "pattern_description": pattern_score["description"],
+                
+                # 上升通道详情
+                "channel_status": channel_status,
+                "in_channel": in_channel,
+                "channel_width": channel_width,
+                "slope_upper": slope_upper,
+                "slope_lower": slope_lower,
+                
+                # 突破形态详情
+                "breakout_signal": breakout_signal,
+                "breakout_strength": breakout_strength,
+                "resistance_level": resistance_level,
+                "volume_confirmed": volume_confirmed,
+                
+                # 顶部风险详情
+                "head_risk_signal": head_risk_signal,
+                "risk_intensity": risk_intensity,
+                "macd_divergence": macd_divergence,
+                "rsi_divergence": rsi_divergence,
+                "volume_decline": volume_decline,
+                
+                # 数据质量信息
+                "data_periods": len(df),
+                "analysis_timestamp": datetime.now().isoformat(),
+                "confidence_level": self._calculate_confidence_level(df, pattern_score["score"])
+            }
+            
+            # 记录分析结果
+            logger.info(f"形态分析完成 - 状态: {pattern_score['status']}, "
+                       f"评分: {pattern_score['score']}, "
+                       f"优先级: {pattern_score['priority']}")
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"价格形态分析过程中发生错误: {e}")
+            return self._empty_pattern_result()
+    
+    def _empty_pattern_result(self):
+        """返回空的形态分析结果"""
+        return {
+            "pattern_score": 0,
+            "pattern_status": "数据不足",
+            "pattern_priority": 5,
+            "pattern_description": "数据不足以进行形态分析",
+            "channel_status": 0,
+            "in_channel": False,
+            "channel_width": 0,
+            "slope_upper": 0,
+            "slope_lower": 0,
+            "breakout_signal": False,
+            "breakout_strength": 0,
+            "resistance_level": 0,
+            "volume_confirmed": False,
+            "head_risk_signal": False,
+            "risk_intensity": 0,
+            "macd_divergence": False,
+            "rsi_divergence": False,
+            "volume_decline": False,
+            "data_periods": 0,
+            "analysis_timestamp": datetime.now().isoformat(),
+            "confidence_level": 0
+        }
+    
+    def _calculate_confidence_level(self, df, pattern_score):
+        """计算置信度水平"""
+        try:
+            confidence = 0.5  # 基础置信度
+            
+            # 数据量加成
+            if len(df) >= 250:  # 一年数据
+                confidence += 0.3
+            elif len(df) >= 60:  # 三个月数据
+                confidence += 0.2
+            elif len(df) >= 30:  # 一个月数据
+                confidence += 0.1
+            
+            # 信号强度加成
+            if abs(pattern_score) >= 2:
+                confidence += 0.2
+            elif abs(pattern_score) >= 1:
+                confidence += 0.1
+            
+            return min(confidence, 1.0)
+            
+        except Exception as e:
+            logger.error(f"计算置信度时发生错误: {e}")
+            return 0.5
     
     def combine_signals(self, df):
         """
@@ -746,6 +1421,20 @@ class TrendStrategy:
         if 'volume' in df.columns and 'volume_ma_5' in df.columns:
             df = self.volume_price_confirmation(df)
         
+        # 执行价格形态识别分析
+        logger.info("开始执行价格形态识别分析")
+        pattern_analysis = self.analyze_price_patterns(df)
+        
+        # 将形态分析结果添加到数据框中
+        result_df = df.copy()
+        result_df['pattern_score'] = pattern_analysis['pattern_score']
+        result_df['pattern_status'] = pattern_analysis['pattern_status']
+        result_df['pattern_priority'] = pattern_analysis['pattern_priority']
+        result_df['head_risk_signal'] = pattern_analysis['head_risk_signal']
+        result_df['breakout_signal'] = pattern_analysis['breakout_signal']
+        result_df['channel_status'] = pattern_analysis['channel_status']
+        result_df['confidence_level'] = pattern_analysis['confidence_level']
+        
         # 确保必要的信号列存在
         signal_cols = [
             'bb_signal', 'ema_signal', 'macd_signal', 'multi_timeframe_signal',
@@ -760,8 +1449,14 @@ class TrendStrategy:
         
         logger.info(f"开始组合策略信号，可用信号: {available_signals}")
         
-        # 复制数据，避免修改原始数据
-        result_df = df.copy()
+        # 将形态分析结果添加到数据框中
+        result_df['pattern_score'] = pattern_analysis['pattern_score']
+        result_df['pattern_status'] = pattern_analysis['pattern_status']
+        result_df['pattern_priority'] = pattern_analysis['pattern_priority']
+        result_df['head_risk_signal'] = pattern_analysis['head_risk_signal']
+        result_df['breakout_signal'] = pattern_analysis['breakout_signal']
+        result_df['channel_status'] = pattern_analysis['channel_status']
+        result_df['confidence_level'] = pattern_analysis['confidence_level']
         
         # 按照策略类型分组
         # trend_signals = ['ema_signal', 'bb_signal', 'macd_signal']
@@ -808,19 +1503,44 @@ class TrendStrategy:
         # 成交量确认可以作为额外的过滤条件
         result_df['volume_confirmed'] = result_df['confirmation_score'] > 0
 
-        # --- 组合信号逻辑（独裁者+顾问模型） ---
+        # --- 价格形态识别分层优先级系统 ---
         # 初始化最终仓位列
         result_df['final_position'] = 0.0
+        
+        # 优先级1：顶部风险信号（否决权 - 最高优先级）
+        if pattern_analysis['head_risk_signal']:
+            logger.warning(f"检测到顶部风险信号，优先级1启动 - {pattern_analysis['pattern_description']}")
+            result_df['final_position'] = -0.5  # 减仓信号
+            result_df['pattern_action'] = "顶部风险-减仓"
+        
+        # 优先级2：突破形态识别（仅在无顶部风险时生效）
+        elif pattern_analysis['breakout_signal']:
+            logger.info(f"检测到突破形态信号，优先级2启动 - {pattern_analysis['pattern_description']}")
+            result_df['final_position'] = 1.0  # 买入信号
+            result_df['pattern_action'] = "突破形态-买入"
+        
+        # 优先级3：上升通道检测（仅在无更高优先级信号时生效）
+        elif pattern_analysis['channel_status'] == 1:
+            logger.info(f"检测到上升通道信号，优先级3启动 - {pattern_analysis['pattern_description']}")
+            # 结合传统信号决定仓位
+            if result_df['trend_score'].iloc[-1] >= 1.0:
+                result_df['final_position'] = 0.8  # 通道内买入
+            elif result_df['trend_score'].iloc[-1] <= -1.0:
+                result_df['final_position'] = -0.3  # 通道内轻仓卖出
+            else:
+                result_df['final_position'] = 0.3  # 通道内持仓
+            result_df['pattern_action'] = "上升通道-持仓"
+        
+        # 优先级4：传统信号组合（仅在无形态信号时生效）
+        else:
+            logger.info("无明确形态信号，使用传统信号组合")
+            # 核心趋势策略
+            main_buy_condition = (result_df['trend_score'] >= 1.0)
+            main_sell_condition = (result_df['trend_score'] <= -1.0)
 
-        # 规则 1：核心趋势策略（优先级最高）
-        # TODO： 恢复multi tf score
-        # main_buy_condition = (result_df['trend_score'] >= 1.0) & (result_df['multi_tf_score'] > 1.0)
-        # main_sell_condition = (result_df['trend_score'] <= -1.0) & (result_df['multi_tf_score'] < -1.0)
-        main_buy_condition = (result_df['trend_score'] >= 1.0) 
-        main_sell_condition = (result_df['trend_score'] <= -1.0)
-
-        result_df.loc[main_buy_condition, 'final_position'] = 1.0
-        result_df.loc[main_sell_condition, 'final_position'] = -1.0
+            result_df.loc[main_buy_condition, 'final_position'] = 1.0
+            result_df.loc[main_sell_condition, 'final_position'] = -1.0
+            result_df['pattern_action'] = "传统信号"
 
         # # 规则 2：反转策略（仅在未触发主要趋势信号时）
         # reversal_buy_condition = (result_df['final_position'] == 0.0) & \
@@ -854,6 +1574,19 @@ class TrendStrategy:
         # 统计信号数量
         buy_signals = (result_df['final_signal'] > 0).sum()
         sell_signals = (result_df['final_signal'] < 0).sum()
+        
+        # 统计形态识别结果
+        pattern_actions = result_df['pattern_action'].iloc[-1] if 'pattern_action' in result_df.columns else "无"
+        current_pattern_score = result_df['pattern_score'].iloc[-1] if 'pattern_score' in result_df.columns else 0
+        current_confidence = result_df['confidence_level'].iloc[-1] if 'confidence_level' in result_df.columns else 0
+        
+        logger.info(f"=== 价格形态识别结果 ===")
+        logger.info(f"形态状态: {pattern_analysis['pattern_status']}")
+        logger.info(f"形态评分: {pattern_analysis['pattern_score']}")
+        logger.info(f"优先级: {pattern_analysis['pattern_priority']}")
+        logger.info(f"置信度: {pattern_analysis['confidence_level']:.2f}")
+        logger.info(f"执行动作: {pattern_actions}")
+        logger.info(f"=== 信号组合结果 ===")
         logger.info(f"组合信号计算完成，买入信号: {buy_signals}个, 卖出信号: {sell_signals}个")
         logger.info(f"其中完全买入信号: {(result_df['final_signal'] == 1).sum()}个, "
                     f"试探性买入信号: {(result_df['final_signal'] == 0.5).sum()}个, "
