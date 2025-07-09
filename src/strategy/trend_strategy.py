@@ -87,6 +87,11 @@ class TrendStrategy:
         self.rsi_period = trend_config.get('rsi_period', 14)  # RSI周期
         self.volume_sma_period = trend_config.get('volume_sma_period', 20)  # 成交量均线周期
         
+        # 移动平均线分析参数
+        self.ma_periods = trend_config.get('ma_periods', [5, 10, 20, 60])  # 移动平均线周期
+        self.ma_support_threshold = trend_config.get('ma_support_threshold', 0.02)  # 支撑阈值敏感度
+        self.trend_strength_sensitivity = trend_config.get('trend_strength_sensitivity', 1.0)  # 趋势强度敏感度
+        
         # 策略类型仓位权重
         self.trend_weight = trend_config.get('trend_weight', 0.7)  # 趋势跟踪 (60-80%)
         self.multi_tf_weight = trend_config.get('multi_tf_weight', 0.25)  # 多周期策略 (20-30%)
@@ -107,6 +112,8 @@ class TrendStrategy:
                    f"布林带周期={self.bollinger_period}, 布林带标准差={self.bollinger_std_dev}, "
                    f"EMA短期={self.ema_short_period}, EMA长期={self.ema_long_period}, "
                    f"MACD参数=({self.macd_fast_period}, {self.macd_slow_period}, {self.macd_signal_period}), "
+                   f"MA分析周期={self.ma_periods}, MA支撑阈值={self.ma_support_threshold:.2%}, "
+                   f"趋势强度敏感度={self.trend_strength_sensitivity}, "
                    f"EMA通道周期={self.ema_channel_period}, 成交量阈值={self.volume_threshold}, "
                    f"通道周期={self.channel_period}, 突破阻力位周期={self.breakout_resistance_period}, "
                    f"顶部风险高点周期={self.head_risk_peak_period}")
@@ -186,101 +193,6 @@ class TrendStrategy:
         buy_signals = (result_df['bb_signal'] == 1).sum()
         sell_signals = (result_df['bb_signal'] == -1).sum()
         logger.info(f"布林带突破信号计算完成，买入信号: {buy_signals}个, 卖出信号: {sell_signals}个")
-        
-        return result_df
-    
-    def ema_crossover_signal(self, df):
-        """
-        EMA长短周期移动平均线交叉信号（21周期与200周期EMA）
-        
-        Parameters
-        ----------
-        df : pandas.DataFrame
-            包含价格和技术指标的数据框
-            
-        Returns
-        -------
-        pandas.DataFrame
-            添加了EMA交叉信号的数据框
-        """
-        if df.empty:
-            logger.warning("输入的数据为空")
-            return df
-        
-        # 确保必要的列存在
-        required_cols = ["date", "close"]
-        missing_cols = [col for col in required_cols if col not in df.columns]
-        if missing_cols:
-            logger.error(f"EMA交叉策略所需的列缺失: {missing_cols}")
-            return df
-        
-        logger.info("开始计算EMA长短周期交叉信号")
-        
-        # 复制数据，避免修改原始数据
-        result_df = df.copy()
-        
-        # 使用talib计算快速和慢速EMA
-        result_df['ema_fast'] = talib.EMA(result_df['close'], timeperiod=self.fast_ma)
-        result_df['ema_slow'] = talib.EMA(result_df['close'], timeperiod=self.slow_ma)
-        
-        # 差值及其变化率
-        result_df['ema_diff'] = result_df['ema_fast'] - result_df['ema_slow']
-        result_df['ema_diff_change'] = result_df['ema_diff'].diff()
-        
-        # 计算交叉信号
-        # 1. 金叉：短期EMA从下方穿过长期EMA
-        # 2. 死叉：短期EMA从上方穿过长期EMA
-        
-        # 金叉信号
-        result_df['ema_golden_cross'] = (
-            (result_df['ema_fast'] > result_df['ema_slow']) &
-            (result_df['ema_fast'].shift(1) <= result_df['ema_slow'].shift(1))
-        )
-        
-        # 死叉信号
-        result_df['ema_death_cross'] = (
-            (result_df['ema_fast'] < result_df['ema_slow']) &
-            (result_df['ema_fast'].shift(1) >= result_df['ema_slow'].shift(1))
-        )
-        
-        # 收敛信号：差值向0靠近
-        result_df['ema_converging'] = (
-            (result_df['ema_fast'] > result_df['ema_slow']) &
-            (result_df['ema_diff_change'] < 0) |
-            (result_df['ema_fast'] < result_df['ema_slow']) &
-            (result_df['ema_diff_change'] > 0)
-        )
-        
-        # 发散信号：差值远离0
-        result_df['ema_diverging'] = (
-            (result_df['ema_fast'] > result_df['ema_slow']) &
-            (result_df['ema_diff_change'] > 0) |
-            (result_df['ema_fast'] < result_df['ema_slow']) &
-            (result_df['ema_diff_change'] < 0)
-        )
-        
-        # 综合信号
-        # 1 = 买入信号（金叉或多头发散）
-        # -1 = 卖出信号（死叉或空头发散）
-        # 0 = 无信号
-        
-        # 初始化信号列
-        result_df['ema_signal'] = 0
-        
-        # 买入信号：金叉或多头发散（短期EMA在长期EMA上方且差距扩大）
-        result_df.loc[result_df['ema_golden_cross'], 'ema_signal'] = 1
-        result_df.loc[(result_df['ema_fast'] > result_df['ema_slow']) & 
-                      (result_df['ema_diverging']), 'ema_signal'] = 1
-        
-        # 卖出信号：死叉或空头发散（短期EMA在长期EMA下方且差距扩大）
-        result_df.loc[result_df['ema_death_cross'], 'ema_signal'] = -1
-        result_df.loc[(result_df['ema_fast'] < result_df['ema_slow']) & 
-                      (result_df['ema_diverging']), 'ema_signal'] = -1
-        
-        # 统计信号数量
-        buy_signals = (result_df['ema_signal'] == 1).sum()
-        sell_signals = (result_df['ema_signal'] == -1).sum()
-        logger.info(f"EMA交叉信号计算完成，买入信号: {buy_signals}个, 卖出信号: {sell_signals}个")
         
         return result_df
     
@@ -390,206 +302,342 @@ class TrendStrategy:
         
         return result_df
     
-    # def multi_timeframe_strategy(self, df_5min, df_15min, df_60min):
-    #     """
-    #     多维周期组合策略（5分钟/15分钟/60分钟）
-        
-    #     Parameters
-    #     ----------
-    #     df_5min : pandas.DataFrame
-    #         5分钟K线数据
-    #     df_15min : pandas.DataFrame
-    #         15分钟K线数据
-    #     df_60min : pandas.DataFrame
-    #         60分钟K线数据
-            
-    #     Returns
-    #     -------
-    #     pandas.DataFrame
-    #         添加了多维周期组合信号的数据框（基于5分钟K线）
-    #     """
-    #     if df_5min.empty or df_15min.empty or df_60min.empty:
-    #         logger.warning("输入的数据为空")
-    #         return df_5min
-        
-    #     # 确保必要的列存在
-    #     required_cols = ["date", "close", "ma_5", "ma_20", "volume", "volume_ma_5"]
-    #     for df, timeframe in [(df_5min, "5分钟"), (df_15min, "15分钟"), (df_60min, "60分钟")]:
-    #         missing_cols = [col for col in required_cols if col not in df.columns]
-    #         if missing_cols:
-    #             logger.error(f"{timeframe}K线数据缺失必要的列: {missing_cols}")
-    #             return df_5min
-        
-    #     logger.info("开始计算多维周期组合策略信号")
-        
-    #     # 复制数据，避免修改原始数据
-    #     result_df = df_5min.copy()
-        
-    #     # 计算各个周期的趋势信号
-    #     # 使用5日和20日移动平均线判断趋势
-        
-    #     # 5分钟周期趋势
-    #     df_5min['trend'] = 0
-    #     df_5min.loc[df_5min['ma_5'] > df_5min['ma_20'], 'trend'] = 1  # 上升趋势
-    #     df_5min.loc[df_5min['ma_5'] < df_5min['ma_20'], 'trend'] = -1  # 下降趋势
-        
-    #     # 15分钟周期趋势
-    #     df_15min['trend'] = 0
-    #     df_15min.loc[df_15min['ma_5'] > df_15min['ma_20'], 'trend'] = 1  # 上升趋势
-    #     df_15min.loc[df_15min['ma_5'] < df_15min['ma_20'], 'trend'] = -1  # 下降趋势
-        
-    #     # 60分钟周期趋势
-    #     df_60min['trend'] = 0
-    #     df_60min.loc[df_60min['ma_5'] > df_60min['ma_20'], 'trend'] = 1  # 上升趋势
-    #     df_60min.loc[df_60min['ma_5'] < df_60min['ma_20'], 'trend'] = -1  # 下降趋势
-        
-    #     # 将15分钟和60分钟的趋势信号合并到5分钟数据中
-    #     # 需要根据时间戳进行匹配
-        
-    #     # 确保日期列为datetime类型
-    #     for df in [result_df, df_15min, df_60min]:
-    #         if 'date' in df.columns and not pd.api.types.is_datetime64_any_dtype(df['date']):
-    #             df['date'] = pd.to_datetime(df['date'])
-        
-    #     # 创建用于合并的辅助列
-    #     result_df['date_15min'] = result_df['date'].apply(
-    #         lambda x: x.replace(minute=(x.minute // 15) * 15, second=0, microsecond=0)
-    #     )
-        
-    #     result_df['date_60min'] = result_df['date'].apply(
-    #         lambda x: x.replace(minute=0, second=0, microsecond=0)
-    #     )
-        
-    #     # 准备15分钟和60分钟的趋势数据用于合并
-    #     df_15min_trend = df_15min[['date', 'trend']].rename(
-    #         columns={'date': 'date_15min', 'trend': 'trend_15min'}
-    #     )
-        
-    #     df_60min_trend = df_60min[['date', 'trend']].rename(
-    #         columns={'date': 'date_60min', 'trend': 'trend_60min'}
-    #     )
-        
-    #     # 合并趋势数据
-    #     result_df = pd.merge(result_df, df_15min_trend, on='date_15min', how='left')
-    #     result_df = pd.merge(result_df, df_60min_trend, on='date_60min', how='left')
-        
-    #     # 填充可能的缺失值
-    #     result_df['trend_15min'] = result_df['trend_15min'].fillna(0)
-    #     result_df['trend_60min'] = result_df['trend_60min'].fillna(0)
-        
-    #     # 重命名5分钟趋势列
-    #     result_df.rename(columns={'trend': 'trend_5min'}, inplace=True)
-        
-    #     # 计算综合趋势得分 (-3 到 3)
-    #     result_df['trend_score'] = result_df['trend_5min'] + result_df['trend_15min'] + result_df['trend_60min']
-        
-    #     # 计算多维周期组合信号
-    #     # 1 = 买入信号（趋势得分 >= 2，即至少两个周期为上升趋势）
-    #     # -1 = 卖出信号（趋势得分 <= -2，即至少两个周期为下降趋势）
-    #     # 0 = 无信号
-        
-    #     result_df['multi_timeframe_signal'] = 0
-    #     result_df.loc[result_df['trend_score'] >= 2, 'multi_timeframe_signal'] = 1
-    #     result_df.loc[result_df['trend_score'] <= -2, 'multi_timeframe_signal'] = -1
-        
-    #     # 统计信号数量
-    #     buy_signals = (result_df['multi_timeframe_signal'] == 1).sum()
-    #     sell_signals = (result_df['multi_timeframe_signal'] == -1).sum()
-    #     logger.info(f"多维周期组合策略信号计算完成，买入信号: {buy_signals}个, 卖出信号: {sell_signals}个")
-        
-    #     # 删除辅助列
-    #     result_df.drop(['date_15min', 'date_60min'], axis=1, inplace=True)
-        
-    #     return result_df
-    
-    def ema_channel_reversal(self, df):
+    def moving_average_analysis(self, df, ma_periods=None, support_threshold=0.02, trend_strength_sensitivity=1.0):
         """
-        对冲型反转策略（基于144日EMA均线通道的反转交易）
+        综合移动平均线分析函数
+        
+        实现多头排列检测和关键移动平均线支撑分析，包括趋势强度评分
         
         Parameters
         ----------
         df : pandas.DataFrame
-            包含价格和技术指标的数据框
+            包含价格数据的数据框，必须包含 'close' 列
+        ma_periods : list, default [5, 10, 20, 60]
+            移动平均线周期列表
+        support_threshold : float, default 0.02
+            支撑阈值敏感度，用于判断价格是否接近移动平均线支撑位（2%）
+        trend_strength_sensitivity : float, default 1.0
+            趋势强度敏感度调节因子，值越大对趋势强度要求越高
             
         Returns
         -------
         pandas.DataFrame
-            添加了EMA通道反转信号的数据框
+            添加了移动平均线分析结果的数据框，包含以下列：
+            - ma_5, ma_10, ma_20, ma_60: 各周期移动平均线
+            - bullish_alignment: 多头排列状态 (True/False)
+            - alignment_strength: 排列强度评分 (0-1)
+            - ma20_support: MA20支撑状态 (True/False)
+            - ma60_support: MA60支撑状态 (True/False)
+            - key_ma_support: 关键移动平均线支撑综合评分 (0-1)
+            - trend_strength_score: 趋势强度评分 (0-1)
+            - ma_signal: 移动平均线综合信号 (-1, 0, 1)
         """
         if df.empty:
-            logger.warning("输入的数据为空")
+            logger.warning("移动平均线分析：输入数据为空")
             return df
-        
-        # 确保必要的列存在
-        required_cols = ["date", "close", "ema_144", "ema_144_upper", "ema_144_lower"]
+            
+        # 验证必要的列
+        required_cols = ['close']
         missing_cols = [col for col in required_cols if col not in df.columns]
         if missing_cols:
-            logger.error(f"EMA通道反转策略所需的列缺失: {missing_cols}")
+            logger.error(f"移动平均线分析所需的列缺失: {missing_cols}")
             return df
+            
+        # 设置默认移动平均线周期
+        if ma_periods is None:
+            ma_periods = [5, 10, 20, 60]
+            
+        # 验证数据长度是否足够
+        max_period = max(ma_periods)
+        if len(df) < max_period:
+            logger.warning(f"数据长度不足，需要至少{max_period}个周期进行移动平均线分析")
+            return df
+            
+        logger.info(f"开始移动平均线分析，周期: {ma_periods}, 支撑阈值: {support_threshold:.2%}")
         
-        logger.info("开始计算EMA通道反转信号")
-        
-        # 复制数据，避免修改原始数据
+        # 复制数据避免修改原始数据
         result_df = df.copy()
         
-        # 计算价格与EMA的距离百分比
-        result_df['price_to_ema_pct'] = (result_df['close'] - result_df['ema_144']) / result_df['ema_144'] * 100
+        try:
+            # ===== 第一步：计算各周期移动平均线 =====
+            ma_columns = {}
+            for period in ma_periods:
+                col_name = f'ma_{period}'
+                result_df[col_name] = talib.SMA(result_df['close'].values, timeperiod=period)
+                ma_columns[period] = col_name
+                
+            # ===== 第二步：多头排列检测 =====
+            result_df = self._detect_bullish_alignment(result_df, ma_periods, ma_columns)
+            
+            # ===== 第三步：关键移动平均线支撑分析 =====
+            result_df = self._analyze_key_ma_support(result_df, ma_columns, support_threshold)
+            
+            # ===== 第四步：趋势强度评分 =====
+            result_df = self._calculate_trend_strength_score(result_df, ma_periods, ma_columns, trend_strength_sensitivity)
+            
+            # 统计分析结果
+            bullish_count = result_df['bullish_alignment'].sum()
+            ma20_support_count = result_df['ma20_support'].sum()
+            ma60_support_count = result_df['ma60_support'].sum()
+            
+            avg_trend_strength = result_df['trend_strength_score'].mean()
+            max_trend_strength = result_df['trend_strength_score'].max()
+            
+            logger.info(f"=== 移动平均线分析结果 ===")
+            logger.info(f"多头排列次数: {bullish_count}/{len(result_df)} ({bullish_count/len(result_df):.1%})")
+            logger.info(f"MA20支撑次数: {ma20_support_count}/{len(result_df)} ({ma20_support_count/len(result_df):.1%})")
+            logger.info(f"MA60支撑次数: {ma60_support_count}/{len(result_df)} ({ma60_support_count/len(result_df):.1%})")
+            logger.info(f"趋势强度 - 平均: {avg_trend_strength:.3f}, 最大: {max_trend_strength:.3f}")
+            
+            return result_df
+            
+        except Exception as e:
+            logger.error(f"移动平均线分析过程中发生错误: {e}")
+            return df
+    
+    def _detect_bullish_alignment(self, df, ma_periods, ma_columns):
+        """
+        检测多头排列
         
-        # 计算通道宽度百分比
-        result_df['channel_width_pct'] = (result_df['ema_144_upper'] - result_df['ema_144_lower']) / result_df['ema_144'] * 100
+        多头排列定义：
+        1. 当前价格 > MA20 > MA60 (核心条件)
+        2. 理想排列：MA5 > MA10 > MA20 > MA60 (完美多头排列)
+        3. 降级排列：至少满足 MA20 > MA60 (基本多头排列)
+        """
+        try:
+            # 初始化列
+            df['bullish_alignment'] = False
+            df['alignment_strength'] = 0.0
+            df['alignment_type'] = '无排列'
+            
+            # 确保所有需要的MA列都存在
+            required_mas = [5, 10, 20, 60]
+            available_mas = [period for period in required_mas if period in ma_periods]
+            
+            if len(available_mas) < 2:
+                logger.warning("移动平均线周期不足，无法进行多头排列分析")
+                return df
+                
+            # 核心条件：价格 > MA20 且 价格 > MA60
+            if 20 in available_mas and 60 in available_mas:
+                core_condition = (df['close'] > df[ma_columns[20]]) & (df['close'] > df[ma_columns[60]])
+                
+                # 基本多头排列：MA20 > MA60
+                basic_alignment = core_condition & (df[ma_columns[20]] > df[ma_columns[60]])
+                
+                # 完美多头排列：MA5 > MA10 > MA20 > MA60
+                if all(period in available_mas for period in [5, 10, 20, 60]):
+                    perfect_alignment = (basic_alignment &
+                                       (df[ma_columns[5]] > df[ma_columns[10]]) &
+                                       (df[ma_columns[10]] > df[ma_columns[20]]) &
+                                       (df[ma_columns[20]] > df[ma_columns[60]]))
+                    
+                    # 设置排列状态和强度
+                    df.loc[perfect_alignment, 'bullish_alignment'] = True
+                    df.loc[perfect_alignment, 'alignment_strength'] = 1.0
+                    df.loc[perfect_alignment, 'alignment_type'] = '完美多头排列'
+                    
+                    # 基本多头排列（非完美）
+                    basic_only = basic_alignment & (~perfect_alignment)
+                    df.loc[basic_only, 'bullish_alignment'] = True
+                    df.loc[basic_only, 'alignment_strength'] = 0.6
+                    df.loc[basic_only, 'alignment_type'] = '基本多头排列'
+                    
+                else:
+                    # 只有基本排列条件
+                    df.loc[basic_alignment, 'bullish_alignment'] = True
+                    df.loc[basic_alignment, 'alignment_strength'] = 0.6
+                    df.loc[basic_alignment, 'alignment_type'] = '基本多头排列'
+                    
+            return df
+            
+        except Exception as e:
+            logger.error(f"检测多头排列时发生错误: {e}")
+            return df
+    
+    def _analyze_key_ma_support(self, df, ma_columns, support_threshold):
+        """
+        分析关键移动平均线支撑
         
-        # 计算价格在通道中的相对位置 (0-1)
-        result_df['channel_position'] = (result_df['close'] - result_df['ema_144_lower']) / (result_df['ema_144_upper'] - result_df['ema_144_lower'])
+        重点关注MA20和MA60作为中长期支撑位
+        """
+        try:
+            # 初始化支撑列
+            df['ma20_support'] = False
+            df['ma60_support'] = False
+            df['key_ma_support'] = 0.0
+            
+            # MA20支撑分析
+            if 20 in ma_columns:
+                ma20_distance = abs(df['close'] - df[ma_columns[20]]) / df[ma_columns[20]]
+                df['ma20_support'] = (df['close'] >= df[ma_columns[20]]) & (ma20_distance <= support_threshold)
+                
+            # MA60支撑分析
+            if 60 in ma_columns:
+                ma60_distance = abs(df['close'] - df[ma_columns[60]]) / df[ma_columns[60]]
+                df['ma60_support'] = (df['close'] >= df[ma_columns[60]]) & (ma60_distance <= support_threshold)
+                
+            # 综合支撑评分
+            support_score = 0.0
+            if 20 in ma_columns:
+                support_score += df['ma20_support'].astype(float) * 0.4  # MA20权重40%
+            if 60 in ma_columns:
+                support_score += df['ma60_support'].astype(float) * 0.6  # MA60权重60%
+                
+            df['key_ma_support'] = support_score
+            
+            return df
+            
+        except Exception as e:
+            logger.error(f"分析关键移动平均线支撑时发生错误: {e}")
+            return df
+    
+    def _calculate_trend_strength_score(self, df, ma_periods, ma_columns, sensitivity):
+        """
+        计算趋势强度评分
         
-        # 计算通道突破信号
-        # 上轨突破
-        result_df['upper_breakout'] = (
-            (result_df['close'] > result_df['ema_144_upper']) &
-            (result_df['close'].shift(1) <= result_df['ema_144_upper'].shift(1))
-        )
+        基于移动平均线分离度和价格相对位置
+        """
+        try:
+            df['trend_strength_score'] = 0.0
+            
+            if len(ma_periods) < 2:
+                return df
+                
+            # 计算移动平均线分离度
+            separation_scores = []
+            
+            # 短期与长期MA的分离度
+            if 5 in ma_columns and 60 in ma_columns:
+                ma5_ma60_sep = (df[ma_columns[5]] - df[ma_columns[60]]) / df[ma_columns[60]]
+                separation_scores.append(np.clip(ma5_ma60_sep * 10, -1, 1))  # 标准化到[-1,1]
+                
+            # 中期MA分离度
+            if 10 in ma_columns and 20 in ma_columns:
+                ma10_ma20_sep = (df[ma_columns[10]] - df[ma_columns[20]]) / df[ma_columns[20]]
+                separation_scores.append(np.clip(ma10_ma20_sep * 20, -1, 1))
+                
+            # 价格相对于各MA的位置强度
+            price_position_scores = []
+            for period in ma_periods:
+                if period in ma_columns:
+                    price_ma_ratio = (df['close'] - df[ma_columns[period]]) / df[ma_columns[period]]
+                    # 根据MA周期调整权重，长期MA权重更高
+                    weight = period / 60.0  # 以60日MA为基准
+                    weighted_score = np.clip(price_ma_ratio * 10 * weight, -1, 1)
+                    price_position_scores.append(weighted_score)
+                    
+            # 综合评分
+            if separation_scores:
+                avg_separation = np.mean(separation_scores, axis=0)
+            else:
+                avg_separation = 0
+                
+            if price_position_scores:
+                avg_position = np.mean(price_position_scores, axis=0)
+            else:
+                avg_position = 0
+                
+            # 最终趋势强度评分（0-1范围）
+            raw_strength = (avg_separation * 0.4 + avg_position * 0.6) * sensitivity
+            df['trend_strength_score'] = np.clip((raw_strength + 1) / 2, 0, 1)  # 转换到[0,1]
+            
+            return df
+            
+        except Exception as e:
+            logger.error(f"计算趋势强度评分时发生错误: {e}")
+            return df
+    
+    
+    
+    # def ema_channel_reversal(self, df):
+    #     """
+    #     对冲型反转策略（基于144日EMA均线通道的反转交易）
         
-        # 下轨突破
-        result_df['lower_breakout'] = (
-            (result_df['close'] < result_df['ema_144_lower']) &
-            (result_df['close'].shift(1) >= result_df['ema_144_lower'].shift(1))
-        )
+    #     Parameters
+    #     ----------
+    #     df : pandas.DataFrame
+    #         包含价格和技术指标的数据框
+            
+    #     Returns
+    #     -------
+    #     pandas.DataFrame
+    #         添加了EMA通道反转信号的数据框
+    #     """
+    #     if df.empty:
+    #         logger.warning("输入的数据为空")
+    #         return df
         
-        # 初始化信号列
-        result_df['ema_reversal_signal'] = 0
+    #     # 确保必要的列存在
+    #     required_cols = ["date", "close", "ema_144", "ema_144_upper", "ema_144_lower"]
+    #     missing_cols = [col for col in required_cols if col not in df.columns]
+    #     if missing_cols:
+    #         logger.error(f"EMA通道反转策略所需的列缺失: {missing_cols}")
+    #         return df
         
-        # 向量化实现超买反转信号（做空）：价格突破上轨后回落至通道内
-        # 创建一个滚动窗口来检测过去5个周期内是否有上轨突破
-        result_df['upper_breakout_5d'] = result_df['upper_breakout'].rolling(window=5, min_periods=1).max()
+    #     logger.info("开始计算EMA通道反转信号")
         
-        # 超买反转条件：过去5天内有上轨突破，且当前价格回落到通道内，前一天价格还在通道外
-        result_df.loc[
-            (result_df['upper_breakout_5d'] > 0) &
-            (result_df['close'] < result_df['ema_144_upper']) &
-            (result_df['close'].shift(1) >= result_df['ema_144_upper']),
-            'ema_reversal_signal'
-        ] = -1
+    #     # 复制数据，避免修改原始数据
+    #     result_df = df.copy()
         
-        # 向量化实现超卖反转信号（做多）：价格突破下轨后回升至通道内
-        # 创建一个滚动窗口来检测过去5个周期内是否有下轨突破
-        result_df['lower_breakout_5d'] = result_df['lower_breakout'].rolling(window=5, min_periods=1).max()
+    #     # 计算价格与EMA的距离百分比
+    #     result_df['price_to_ema_pct'] = (result_df['close'] - result_df['ema_144']) / result_df['ema_144'] * 100
         
-        # 超卖反转条件：过去5天内有下轨突破，且当前价格回升到通道内，前一天价格还在通道外
-        result_df.loc[
-            (result_df['lower_breakout_5d'] > 0) &
-            (result_df['close'] > result_df['ema_144_lower']) &
-            (result_df['close'].shift(1) <= result_df['ema_144_lower']),
-            'ema_reversal_signal'
-        ] = 1
+    #     # 计算通道宽度百分比
+    #     result_df['channel_width_pct'] = (result_df['ema_144_upper'] - result_df['ema_144_lower']) / result_df['ema_144'] * 100
         
-        # 删除临时列
-        result_df.drop(['upper_breakout_5d', 'lower_breakout_5d'], axis=1, inplace=True)
+    #     # 计算价格在通道中的相对位置 (0-1)
+    #     result_df['channel_position'] = (result_df['close'] - result_df['ema_144_lower']) / (result_df['ema_144_upper'] - result_df['ema_144_lower'])
         
-        # 统计信号数量
-        buy_signals = (result_df['ema_reversal_signal'] == 1).sum()
-        sell_signals = (result_df['ema_reversal_signal'] == -1).sum()
-        logger.info(f"EMA通道反转信号计算完成，买入信号: {buy_signals}个, 卖出信号: {sell_signals}个")
+    #     # 计算通道突破信号
+    #     # 上轨突破
+    #     result_df['upper_breakout'] = (
+    #         (result_df['close'] > result_df['ema_144_upper']) &
+    #         (result_df['close'].shift(1) <= result_df['ema_144_upper'].shift(1))
+    #     )
         
-        return result_df
+    #     # 下轨突破
+    #     result_df['lower_breakout'] = (
+    #         (result_df['close'] < result_df['ema_144_lower']) &
+    #         (result_df['close'].shift(1) >= result_df['ema_144_lower'].shift(1))
+    #     )
+        
+    #     # 初始化信号列
+    #     result_df['ema_reversal_signal'] = 0
+        
+    #     # 向量化实现超买反转信号（做空）：价格突破上轨后回落至通道内
+    #     # 创建一个滚动窗口来检测过去5个周期内是否有上轨突破
+    #     result_df['upper_breakout_5d'] = result_df['upper_breakout'].rolling(window=5, min_periods=1).max()
+        
+    #     # 超买反转条件：过去5天内有上轨突破，且当前价格回落到通道内，前一天价格还在通道外
+    #     result_df.loc[
+    #         (result_df['upper_breakout_5d'] > 0) &
+    #         (result_df['close'] < result_df['ema_144_upper']) &
+    #         (result_df['close'].shift(1) >= result_df['ema_144_upper']),
+    #         'ema_reversal_signal'
+    #     ] = -1
+        
+    #     # 向量化实现超卖反转信号（做多）：价格突破下轨后回升至通道内
+    #     # 创建一个滚动窗口来检测过去5个周期内是否有下轨突破
+    #     result_df['lower_breakout_5d'] = result_df['lower_breakout'].rolling(window=5, min_periods=1).max()
+        
+    #     # 超卖反转条件：过去5天内有下轨突破，且当前价格回升到通道内，前一天价格还在通道外
+    #     result_df.loc[
+    #         (result_df['lower_breakout_5d'] > 0) &
+    #         (result_df['close'] > result_df['ema_144_lower']) &
+    #         (result_df['close'].shift(1) <= result_df['ema_144_lower']),
+    #         'ema_reversal_signal'
+    #     ] = 1
+        
+    #     # 删除临时列
+    #     result_df.drop(['upper_breakout_5d', 'lower_breakout_5d'], axis=1, inplace=True)
+        
+    #     # 统计信号数量
+    #     buy_signals = (result_df['ema_reversal_signal'] == 1).sum()
+    #     sell_signals = (result_df['ema_reversal_signal'] == -1).sum()
+    #     logger.info(f"EMA通道反转信号计算完成，买入信号: {buy_signals}个, 卖出信号: {sell_signals}个")
+        
+    #     return result_df
     
     def volume_price_confirmation(self, df):
         """
@@ -643,11 +691,8 @@ class TrendStrategy:
         # ===== 第二步：市场阶段识别 =====
         result_df = self._identify_simplified_market_phases(result_df)
         
-        # TODO： 优化调用关系，不要全量调用，按阶段确定对应的分析函数
-        # ===== 第三步：分阶段量价分析 =====
-        result_df = self._analyze_uptrend_volume_price(result_df)
-        result_df = self._analyze_breakout_volume_price(result_df)
-        result_df = self._analyze_consolidation_volume_price(result_df)
+        # ===== 第三步：基于阶段的条件量价分析（优化版本） =====
+        result_df = self._analyze_volume_price_by_stage(result_df)
         
         # ===== 第四步：综合量价信号生成 =====
         result_df = self._generate_final_volume_price_signal(result_df)
@@ -739,7 +784,7 @@ class TrendStrategy:
             return df
     
     def _analyze_uptrend_volume_price(self, df):
-        """上涨阶段量价分析
+        """上涨阶段量价分析（优化版本）
         
         上涨阶段 (Uptrend Phase):
         - 健康状态 (加分): 价涨量增 - 量价配合
@@ -747,35 +792,34 @@ class TrendStrategy:
         - 警示状态 (减分): 价滞量增 - 主力可能在出货
         """
         try:
-            df['uptrend_vp_score'] = 0.0
+            # 如果uptrend_vp_score列不存在，初始化
+            if 'uptrend_vp_score' not in df.columns:
+                df['uptrend_vp_score'] = 0.0
             
-            # 仅在上涨阶段进行分析
+            # 仅在上涨阶段进行分析，提前过滤
             uptrend_mask = (df['market_phase'] == 'uptrend')
+            if not uptrend_mask.any():
+                return df  # 没有上涨阶段数据，直接返回
+            
+            # 向量化计算所有条件
+            price_up = (df['price_change'] > 0)
+            volume_expand = (df['volume_ratio_20d'] > 1.2)
+            volume_shrink = (df['volume_ratio_20d'] < 0.8)
+            high_position = (df['price_position'] > 0.8)
+            price_stagnant = (abs(df['price_change']) < 0.005)
+            volume_surge = (df['volume_ratio_20d'] > 1.5)
             
             # 1. 健康状态：价涨量增（量价配合）- 加分
-            healthy_uptrend = (
-                uptrend_mask &
-                (df['price_change'] > 0) &           # 价格上涨
-                (df['volume_ratio_20d'] > 1.2)       # 成交量温和放大（大于20日均量）
-            )
-            df.loc[healthy_uptrend, 'uptrend_vp_score'] = 0.6  # 强力加分
+            healthy_uptrend = uptrend_mask & price_up & volume_expand
+            df.loc[healthy_uptrend, 'uptrend_vp_score'] = 0.6
             
             # 2. 警示状态：价涨量缩（追高意愿不足）- 减分
-            warning_uptrend_shrink = (
-                uptrend_mask &
-                (df['price_change'] > 0) &           # 价格继续上涨
-                (df['volume_ratio_20d'] < 0.8)       # 成交量开始萎缩
-            )
-            df.loc[warning_uptrend_shrink, 'uptrend_vp_score'] = -0.4  # 警示减分
+            warning_uptrend_shrink = uptrend_mask & price_up & volume_shrink
+            df.loc[warning_uptrend_shrink, 'uptrend_vp_score'] = -0.4
             
             # 3. 警示状态：价滞量增（主力出货）- 减分
-            warning_stagnant_volume = (
-                uptrend_mask &
-                (df['price_position'] > 0.8) &       # 价格在高位
-                (abs(df['price_change']) < 0.005) &  # 价格盘整/滞涨
-                (df['volume_ratio_20d'] > 1.5)       # 放出巨量
-            )
-            df.loc[warning_stagnant_volume, 'uptrend_vp_score'] = -0.5  # 强警示减分
+            warning_stagnant_volume = uptrend_mask & high_position & price_stagnant & volume_surge
+            df.loc[warning_stagnant_volume, 'uptrend_vp_score'] = -0.5
             
             return df
             
@@ -784,33 +828,34 @@ class TrendStrategy:
             return df
     
     def _analyze_breakout_volume_price(self, df):
-        """突破阶段量价分析
+        """突破阶段量价分析（优化版本）
         
         突破阶段 (Breakout Phase):
         - 强信号 (强力加分): 价升量增 - 突破伴随成交量显著放大(>1.5倍均量)
         - 假信号 (减分/无效): 价升量缩 - 假突破概率高
         """
         try:
-            df['breakout_vp_score'] = 0.0
+            # 如果breakout_vp_score列不存在，初始化
+            if 'breakout_vp_score' not in df.columns:
+                df['breakout_vp_score'] = 0.0
             
-            # 仅在突破阶段进行分析
+            # 仅在突破阶段进行分析，提前过滤
             breakout_mask = (df['market_phase'] == 'breakout')
+            if not breakout_mask.any():
+                return df  # 没有突破阶段数据，直接返回
+            
+            # 向量化计算所有条件
+            price_rise = (df['price_change'] > 0.01)
+            volume_surge = (df['volume_ratio_20d'] > 1.5)
+            volume_shrink = (df['volume_ratio_20d'] < 0.9)
             
             # 1. 强信号：价升量增（最可靠的买入信号）- 强力加分
-            strong_breakout = (
-                breakout_mask &
-                (df['price_change'] > 0.01) &        # 价格上升
-                (df['volume_ratio_20d'] > 1.5)       # 成交量显著放大（>1.5倍均量）
-            )
-            df.loc[strong_breakout, 'breakout_vp_score'] = 0.8  # 最强信号
+            strong_breakout = breakout_mask & price_rise & volume_surge
+            df.loc[strong_breakout, 'breakout_vp_score'] = 0.8
             
             # 2. 假信号：价升量缩（假突破）- 减分/无效
-            false_breakout = (
-                breakout_mask &
-                (df['price_change'] > 0.01) &        # 价格上升
-                (df['volume_ratio_20d'] < 0.9)       # 成交量萎缩，无量配合
-            )
-            df.loc[false_breakout, 'breakout_vp_score'] = -0.6  # 假突破警告
+            false_breakout = breakout_mask & price_rise & volume_shrink
+            df.loc[false_breakout, 'breakout_vp_score'] = -0.6
             
             return df
             
@@ -819,48 +864,111 @@ class TrendStrategy:
             return df
     
     def _analyze_consolidation_volume_price(self, df):
-        """回调/盘整阶段量价分析
+        """回调/盘整阶段量价分析（优化版本）
         
         回调/盘整阶段 (Consolidation Phase):
         - 健康状态 (加分/观望): 价跌量缩 - 洗盘而非出货，未来买入机会
         - 警示状态 (减分): 价跌量增 - 恐慌盘或主力出货，趋势可能反转
         """
         try:
-            df['consolidation_vp_score'] = 0.0
+            # 如果consolidation_vp_score列不存在，初始化
+            if 'consolidation_vp_score' not in df.columns:
+                df['consolidation_vp_score'] = 0.0
             
-            # 回调阶段和盘整阶段都包含在内
-            consolidation_mask = (df['market_phase'].isin(['retracement', 'consolidation']))
+            # 回调阶段和盘整阶段都包含在内，提前过滤
+            consolidation_mask = df['market_phase'].isin(['retracement', 'consolidation'])
+            if not consolidation_mask.any():
+                return df  # 没有盘整/回调阶段数据，直接返回
+            
+            # 向量化计算所有条件
+            price_down = (df['price_change'] < 0)
+            price_down_significant = (df['price_change'] < -0.01)
+            volume_shrink = (df['volume_ratio_20d'] < 0.8)
+            volume_expand = (df['volume_ratio_20d'] > 1.2)
+            volume_above_avg = (df['volume_ratio_20d'] > 1.0)
+            above_support = (df['price_position'] > 0.3)
+            price_sideways = (abs(df['price_change']) < 0.005)
+            mid_position = (df['price_position'] > 0.4) & (df['price_position'] < 0.6)
+            consolidation_only = (df['market_phase'] == 'consolidation')
             
             # 1. 健康状态：价跌量缩（洗盘）- 加分/观望（未来买入机会）
-            healthy_retracement = (
-                consolidation_mask &
-                (df['price_change'] < 0) &           # 价格下跌
-                (df['volume_ratio_20d'] < 0.8) &     # 成交量收缩
-                (df['price_position'] > 0.3)         # 仍在支撑之上
-            )
-            df.loc[healthy_retracement, 'consolidation_vp_score'] = 0.3  # 观望等待机会
+            healthy_retracement = consolidation_mask & price_down & volume_shrink & above_support
+            df.loc[healthy_retracement, 'consolidation_vp_score'] = 0.3
             
             # 2. 警示状态：价跌量增（恐慌盘或主力出货）- 减分
-            warning_sell_off = (
-                consolidation_mask &
-                (df['price_change'] < -0.01) &       # 价格明显下跌
-                (df['volume_ratio_20d'] > 1.2)       # 成交量放大（恐慌盘或出货）
-            )
-            df.loc[warning_sell_off, 'consolidation_vp_score'] = -0.4  # 趋势可能反转
+            warning_sell_off = consolidation_mask & price_down_significant & volume_expand
+            df.loc[warning_sell_off, 'consolidation_vp_score'] = -0.4
             
             # 3. 盘整阶段的健康积累形态
-            healthy_accumulation = (
-                (df['market_phase'] == 'consolidation') &
-                (abs(df['price_change']) < 0.005) &  # 价格横盘
-                (df['volume_ratio_20d'] > 1.0) &     # 成交量高于平均（积累）
-                (df['price_position'] > 0.4) & (df['price_position'] < 0.6)  # 中位盘整
-            )
-            df.loc[healthy_accumulation, 'consolidation_vp_score'] = 0.2  # 积累信号
+            healthy_accumulation = consolidation_only & price_sideways & volume_above_avg & mid_position
+            df.loc[healthy_accumulation, 'consolidation_vp_score'] = 0.2
             
             return df
             
         except Exception as e:
             logger.error(f"分析回调/盘整阶段量价关系时发生错误: {e}")
+            return df
+    
+    def _analyze_volume_price_by_stage(self, df):
+        """
+        基于阶段的条件量价分析（优化版本）
+        
+        根据每行数据的市场阶段，有条件地调用对应的分析函数，
+        避免为每个数据点调用所有三个分析函数，提升性能。
+        
+        Parameters
+        ----------
+        df : pandas.DataFrame
+            包含市场阶段标识的数据框
+            
+        Returns
+        -------
+        pandas.DataFrame
+            添加了基于阶段的量价分析结果的数据框
+        """
+        try:
+            # 初始化所有评分列
+            df['uptrend_vp_score'] = 0.0
+            df['breakout_vp_score'] = 0.0
+            df['consolidation_vp_score'] = 0.0
+            
+            # 获取各阶段的数据掩码
+            uptrend_mask = (df['market_phase'] == 'uptrend')
+            breakout_mask = (df['market_phase'] == 'breakout')
+            consolidation_mask = df['market_phase'].isin(['retracement', 'consolidation'])
+            
+            # 统计各阶段数据量
+            uptrend_count = uptrend_mask.sum()
+            breakout_count = breakout_mask.sum()
+            consolidation_count = consolidation_mask.sum()
+            
+            logger.info(f"阶段化量价分析 - 上涨阶段: {uptrend_count}行, "
+                       f"突破阶段: {breakout_count}行, "
+                       f"盘整/回调阶段: {consolidation_count}行")
+            
+            # 只对有数据的阶段进行分析，避免不必要的函数调用
+            if uptrend_count > 0:
+                logger.debug(f"分析上涨阶段量价关系 ({uptrend_count}行)")
+                df = self._analyze_uptrend_volume_price(df)
+            
+            if breakout_count > 0:
+                logger.debug(f"分析突破阶段量价关系 ({breakout_count}行)")
+                df = self._analyze_breakout_volume_price(df)
+            
+            if consolidation_count > 0:
+                logger.debug(f"分析盘整/回调阶段量价关系 ({consolidation_count}行)")
+                df = self._analyze_consolidation_volume_price(df)
+            
+            
+            return df
+            
+        except Exception as e:
+            logger.error(f"基于阶段的量价分析时发生错误: {e}")
+            # 降级到原始方法
+            logger.warning("降级到全量分析模式")
+            df = self._analyze_uptrend_volume_price(df)
+            df = self._analyze_breakout_volume_price(df)
+            df = self._analyze_consolidation_volume_price(df)
             return df
     
     def _generate_final_volume_price_signal(self, df):
@@ -1406,16 +1514,15 @@ class TrendStrategy:
         if 'bb_upper' in df.columns and 'bb_lower' in df.columns and 'bb_middle' in df.columns:
             df = self.bollinger_bands_breakout(df)
         
-        # 生成EMA交叉信号
-        # if 'ema_fast' in df.columns and 'ema_slow' in df.columns:
-        df = self.ema_crossover_signal(df)
         
         # 生成MACD信号
         df = self.macd_signal(df)
         
-        # 生成EMA通道反转信号
-        if 'ema_144' in df.columns and 'ema_144_upper' in df.columns and 'ema_144_lower' in df.columns:
-            df = self.ema_channel_reversal(df)
+        # 生成移动平均线分析信号
+        df = self.moving_average_analysis(df,
+                                        ma_periods=self.ma_periods,
+                                        support_threshold=self.ma_support_threshold,
+                                        trend_strength_sensitivity=self.trend_strength_sensitivity)
         
         # 生成量价齐升确认信号
         if 'volume' in df.columns and 'volume_ma_5' in df.columns:
@@ -1437,7 +1544,7 @@ class TrendStrategy:
         
         # 确保必要的信号列存在
         signal_cols = [
-            'bb_signal', 'ema_signal', 'macd_signal', 'multi_timeframe_signal',
+            'bb_signal', 'ema_signal', 'macd_signal', 'ma_signal', 'multi_timeframe_signal',
             'ema_reversal_signal', 'volume_price_signal'
         ]
         
@@ -1459,7 +1566,7 @@ class TrendStrategy:
         result_df['confidence_level'] = pattern_analysis['confidence_level']
         
         # 按照策略类型分组
-        # trend_signals = ['ema_signal', 'bb_signal', 'macd_signal']
+        # trend_signals = ['ema_signal', 'bb_signal', 'macd_signal', 'ma_signal']
         trend_signals = ['ema_signal', 'macd_signal']
         # trend_signals = ['bb_signal']
 
