@@ -72,8 +72,28 @@ class SupportPullbackAnalyzer:
         self.volume_contraction_ratio = support_config.get('volume_contraction_ratio', 0.7)  # 成交量萎缩比例（70%）
         self.volume_lookback = support_config.get('volume_lookback', 5)  # 成交量回看周期
         
+        # RSI分析参数
+        self.rsi_period = support_config.get('rsi_period', 14)  # RSI周期
+        self.rsi_overbought_threshold = support_config.get('rsi_overbought_threshold', 70)  # 超买阈值
+        self.rsi_oversold_threshold = support_config.get('rsi_oversold_threshold', 30)  # 超卖阈值
+        self.rsi_extreme_overbought = support_config.get('rsi_extreme_overbought', 80)  # 极度超买阈值
+        self.rsi_pullback_zone_low = support_config.get('rsi_pullback_zone_low', 45)  # 回调区间下限
+        self.rsi_pullback_zone_high = support_config.get('rsi_pullback_zone_high', 55)  # 回调区间上限
+        self.rsi_oversold_recovery_zone = support_config.get('rsi_oversold_recovery_zone', 40)  # 超卖恢复区间
+        self.rsi_prolonged_overbought_periods = support_config.get('rsi_prolonged_overbought_periods', 5)  # 持续超买周期数
+        
+        # MFI分析参数
+        self.mfi_period = support_config.get('mfi_period', 14)  # MFI周期
+        self.mfi_oversold_threshold = support_config.get('mfi_oversold_threshold', 30)  # MFI超卖阈值
+        self.mfi_overbought_threshold = support_config.get('mfi_overbought_threshold', 70)  # MFI超买阈值
+        self.mfi_recovery_threshold = support_config.get('mfi_recovery_threshold', 35)  # MFI恢复阈值
+        self.mfi_momentum_lookback = support_config.get('mfi_momentum_lookback', 3)  # MFI动能回看周期
+        self.mfi_inflow_threshold = support_config.get('mfi_inflow_threshold', 50)  # 资金流入阈值
+        self.price_stability_threshold = support_config.get('price_stability_threshold', 0.02)  # 价格稳定阈值（2%）
+        
         logger.info(f"支撑位识别和成交量分析器初始化完成，参数：MA支撑阈值={self.ma_support_threshold:.2%}, "
-                   f"平台回看周期={self.platform_lookback}, 成交量萎缩比例={self.volume_contraction_ratio:.2%}")
+                   f"平台回看周期={self.platform_lookback}, 成交量萎缩比例={self.volume_contraction_ratio:.2%}, "
+                   f"RSI周期={self.rsi_period}, MFI周期={self.mfi_period}")
     
     def identify_ma_support(self, df):
         """
@@ -1099,6 +1119,265 @@ class SupportPullbackAnalyzer:
                 '看涨吞没': bullish_engulfing_count
             }
         }
+    
+    def analyze_rsi_pullback_conditions(self, df):
+        """
+        分析RSI指标的回调条件，在DataFrame中添加相关布尔值列
+        
+        此函数检查多种RSI相关的技术条件，直接在df中添加布尔值列。
+        主要评估场景：
+        1. 从超买区域回调到中性区间（强势回调）
+        2. 从超卖区域开始的动能反转
+        3. 避免在长期超买状态下入场
+        
+        Parameters
+        ----------
+        df : pd.DataFrame
+            包含OHLCV数据的DataFrame，必须包含'close'列
+            函数会在此DataFrame上添加以下列：
+            - rsi: RSI值
+            - rsi_pullback_from_overbought: 从超买区域的强势回调
+            - rsi_oversold_reversal: 超卖动能反转
+            - rsi_avoid_prolonged_overbought: 应避免（长期超买）
+            - rsi_pullback_favorable: 综合评估是否适合回调入场
+            
+        Returns
+        -------
+        pd.DataFrame
+            添加了RSI分析列的DataFrame
+        """
+        try:
+            # 检查数据有效性
+            if df is None or df.empty:
+                logger.warning("RSI分析：输入数据为空")
+                return df
+            
+            # 检查必需的列
+            if 'close' not in df.columns:
+                logger.error("RSI分析：缺少必需的'close'列")
+                return df
+            
+            # 检查数据量是否足够
+            if len(df) < self.rsi_period + 10:
+                logger.warning(f"RSI分析：数据量不足，需要至少{self.rsi_period + 10}个数据点")
+                # 添加空列
+                df['rsi'] = np.nan
+                df['rsi_pullback_from_overbought'] = False
+                df['rsi_oversold_reversal'] = False
+                df['rsi_avoid_prolonged_overbought'] = False
+                df['rsi_pullback_favorable'] = False
+                return df
+            
+            # 计算RSI
+            df['rsi'] = talib.RSI(df['close'].values, timeperiod=self.rsi_period)
+            
+            # 初始化布尔列
+            df['rsi_pullback_from_overbought'] = False
+            df['rsi_oversold_reversal'] = False
+            df['rsi_avoid_prolonged_overbought'] = False
+            df['rsi_pullback_favorable'] = False
+            
+            # 需要足够的历史数据进行分析
+            min_lookback = 20
+            
+            # 对每一行进行分析（从有足够历史数据的行开始）
+            for i in range(min_lookback, len(df)):
+                if pd.isna(df['rsi'].iloc[i]):
+                    continue
+                
+                current_rsi = df['rsi'].iloc[i]
+                # 获取历史RSI数据
+                recent_rsi = df['rsi'].iloc[max(0, i-20):i+1].dropna()
+                
+                if len(recent_rsi) < 10:
+                    continue
+                
+                # 场景1：从超买区域的强势回调
+                max_rsi_recent = recent_rsi.iloc[-10:].max()
+                if max_rsi_recent > self.rsi_overbought_threshold:
+                    if 45 <= current_rsi <= 55:
+                        # 确认是下降趋势
+                        if len(recent_rsi) >= 10:
+                            rsi_ma5 = recent_rsi.iloc[-5:].mean()
+                            rsi_ma10 = recent_rsi.iloc[-10:].mean()
+                            if rsi_ma5 < rsi_ma10:
+                                df.loc[df.index[i], 'rsi_pullback_from_overbought'] = True
+                
+                # 场景2：超卖动能反转
+                min_rsi_recent = recent_rsi.iloc[-10:].min()
+                if min_rsi_recent < self.rsi_oversold_threshold:
+                    if self.rsi_oversold_threshold <= current_rsi <= 40:
+                        # 确认上升趋势（连续3个周期上升）
+                        if len(recent_rsi) >= 3:
+                            if (recent_rsi.iloc[-1] > recent_rsi.iloc[-2] and 
+                                recent_rsi.iloc[-2] > recent_rsi.iloc[-3]):
+                                df.loc[df.index[i], 'rsi_oversold_reversal'] = True
+                
+                # 场景3：避免长期超买
+                if current_rsi > 80:
+                    # 检查最近5个周期是否都在超买区
+                    if len(recent_rsi) >= 5:
+                        if (recent_rsi.iloc[-5:] > self.rsi_overbought_threshold).all():
+                            df.loc[df.index[i], 'rsi_avoid_prolonged_overbought'] = True
+                
+                # 综合评估
+                if ((df.loc[df.index[i], 'rsi_pullback_from_overbought'] or 
+                     df.loc[df.index[i], 'rsi_oversold_reversal']) and 
+                    not df.loc[df.index[i], 'rsi_avoid_prolonged_overbought']):
+                    df.loc[df.index[i], 'rsi_pullback_favorable'] = True
+            
+            logger.info(f"RSI分析完成，添加了5个分析列")
+            return df
+            
+        except Exception as e:
+            logger.error(f"RSI分析过程中出错: {str(e)}")
+            # 确保添加了列（即使是空的）
+            for col in ['rsi', 'rsi_pullback_from_overbought', 'rsi_oversold_reversal', 
+                       'rsi_avoid_prolonged_overbought', 'rsi_pullback_favorable']:
+                if col not in df.columns:
+                    df[col] = False if col != 'rsi' else np.nan
+            return df
+    
+    def analyze_mfi_pullback_conditions(self, df):
+        """
+        分析MFI指标的回调条件，在DataFrame中添加相关布尔值列
+        
+        此函数检查多种MFI相关的技术条件，直接在df中添加布尔值列。
+        主要评估场景：
+        1. 从超卖区域恢复并显示上升动能
+        2. 价格稳定期间的资金流入模式
+        3. 当前MFI读数是否支持回调入场时机
+        
+        Parameters
+        ----------
+        df : pd.DataFrame
+            包含OHLCV数据的DataFrame，必须包含'high', 'low', 'close', 'volume'列
+            函数会在此DataFrame上添加以下列：
+            - mfi: MFI值
+            - mfi_recovery_from_oversold: 从超卖区恢复
+            - mfi_capital_inflow_stability: 价格稳定期资金流入
+            - mfi_supports_pullback: MFI支持回调入场
+            - mfi_overall_favorable: MFI综合评估有利
+            
+        Returns
+        -------
+        pd.DataFrame
+            添加了MFI分析列的DataFrame
+        """
+        try:
+            # 检查数据有效性
+            if df is None or df.empty:
+                logger.warning("MFI分析：输入数据为空")
+                return df
+            
+            # 检查必需的列
+            required_cols = ['high', 'low', 'close', 'volume']
+            missing_cols = [col for col in required_cols if col not in df.columns]
+            if missing_cols:
+                logger.error(f"MFI分析：缺少必需的列: {missing_cols}")
+                # 添加空列
+                df['mfi'] = np.nan
+                df['mfi_recovery_from_oversold'] = False
+                df['mfi_capital_inflow_stability'] = False
+                df['mfi_supports_pullback'] = False
+                df['mfi_overall_favorable'] = False
+                return df
+            
+            # 检查数据量是否足够
+            if len(df) < self.mfi_period + 10:
+                logger.warning(f"MFI分析：数据量不足，需要至少{self.mfi_period + 10}个数据点")
+                # 添加空列
+                df['mfi'] = np.nan
+                df['mfi_recovery_from_oversold'] = False
+                df['mfi_capital_inflow_stability'] = False
+                df['mfi_supports_pullback'] = False
+                df['mfi_overall_favorable'] = False
+                return df
+            
+            # 计算MFI
+            df['mfi'] = talib.MFI(df['high'].values, df['low'].values,
+                                 df['close'].values, df['volume'].values,
+                                 timeperiod=self.mfi_period)
+            
+            # 初始化布尔列
+            df['mfi_recovery_from_oversold'] = False
+            df['mfi_capital_inflow_stability'] = False
+            df['mfi_supports_pullback'] = False
+            df['mfi_overall_favorable'] = False
+            
+            # 需要足够的历史数据进行分析
+            min_lookback = 20
+            
+            # 对每一行进行分析（从有足够历史数据的行开始）
+            for i in range(min_lookback, len(df)):
+                if pd.isna(df['mfi'].iloc[i]):
+                    continue
+                
+                current_mfi = df['mfi'].iloc[i]
+                # 获取历史MFI数据
+                recent_mfi = df['mfi'].iloc[max(0, i-20):i+1].dropna()
+                
+                if len(recent_mfi) < 10:
+                    continue
+                
+                # 场景1：从超卖区恢复并显示上升动能
+                min_mfi_recent = recent_mfi.iloc[-10:].min()
+                if min_mfi_recent < self.mfi_oversold_threshold:
+                    # 检查是否已经恢复
+                    if current_mfi > self.mfi_recovery_threshold:
+                        # 检查最近几期的MFI动能
+                        if len(recent_mfi) >= self.mfi_momentum_lookback:
+                            recent_momentum = recent_mfi.iloc[-self.mfi_momentum_lookback:]
+                            if len(recent_momentum) >= 2:
+                                momentum_slope = np.polyfit(range(len(recent_momentum)),
+                                                          recent_momentum.values, 1)[0]
+                                if momentum_slope > 0:
+                                    df.loc[df.index[i], 'mfi_recovery_from_oversold'] = True
+                
+                # 场景2：价格稳定期间的资金流入
+                if i >= 10:
+                    # 计算价格波动率
+                    recent_prices = df['close'].iloc[i-9:i+1].values
+                    price_returns = np.diff(recent_prices) / recent_prices[:-1]
+                    price_volatility = np.std(price_returns)
+                    
+                    # 判断价格是否稳定
+                    if price_volatility < self.price_stability_threshold:
+                        # 检查MFI是否显示资金流入（高于50且上升）
+                        if current_mfi > self.mfi_inflow_threshold:
+                            if len(recent_mfi) >= 5:
+                                recent_mfi_trend = recent_mfi.iloc[-5:]
+                                mfi_trend_slope = np.polyfit(range(len(recent_mfi_trend)),
+                                                           recent_mfi_trend.values, 1)[0]
+                                if mfi_trend_slope > 0:
+                                    df.loc[df.index[i], 'mfi_capital_inflow_stability'] = True
+                
+                # 场景3：判断当前MFI是否支持回调入场
+                if self.mfi_recovery_threshold <= current_mfi <= self.mfi_overbought_threshold:
+                    # 检查短期动能
+                    if len(recent_mfi) >= 3:
+                        short_term_trend = recent_mfi.iloc[-3:]
+                        short_term_slope = np.polyfit(range(3), short_term_trend.values, 1)[0]
+                        if short_term_slope >= 0:  # 非负斜率表示稳定或上升
+                            df.loc[df.index[i], 'mfi_supports_pullback'] = True
+                
+                # 综合评估
+                if (df.loc[df.index[i], 'mfi_recovery_from_oversold'] or
+                    df.loc[df.index[i], 'mfi_capital_inflow_stability'] or
+                    df.loc[df.index[i], 'mfi_supports_pullback']):
+                    df.loc[df.index[i], 'mfi_overall_favorable'] = True
+            
+            logger.info(f"MFI分析完成，添加了5个分析列")
+            return df
+            
+        except Exception as e:
+            logger.error(f"MFI分析过程中出错: {str(e)}")
+            # 确保添加了列（即使是空的）
+            for col in ['mfi', 'mfi_recovery_from_oversold', 'mfi_capital_inflow_stability',
+                       'mfi_supports_pullback', 'mfi_overall_favorable']:
+                if col not in df.columns:
+                    df[col] = False if col != 'mfi' else np.nan
+            return df
 
 
 # 测试代码
@@ -1112,5 +1391,176 @@ if __name__ == "__main__":
     # 创建分析器实例
     analyzer = SupportPullbackAnalyzer()
     
-    # 测试分析器
-    print("支撑位识别和成交量分析模块测试完成")
+    print("=== 支撑位识别和成交量分析模块测试 ===\n")
+    
+    # 创建测试数据
+    dates = pd.date_range(end=datetime.now(), periods=100, freq='D')
+    
+    # 生成模拟OHLCV数据
+    np.random.seed(42)
+    base_price = 100
+    returns = np.random.randn(100) * 0.02  # 2%的日收益率标准差
+    close_prices = base_price * np.exp(np.cumsum(returns))
+    
+    # 生成OHLCV数据
+    df = pd.DataFrame({
+        'date': dates,
+        'open': close_prices * (1 + np.random.randn(100) * 0.005),
+        'high': close_prices * (1 + np.abs(np.random.randn(100)) * 0.01),
+        'low': close_prices * (1 - np.abs(np.random.randn(100)) * 0.01),
+        'close': close_prices,
+        'volume': np.random.randint(1000000, 5000000, 100)
+    })
+    
+    print("1. 测试数据生成完成")
+    print(f"   数据范围: {df['date'].min()} 到 {df['date'].max()}")
+    print(f"   数据点数: {len(df)}")
+    print(f"   价格范围: {df['close'].min():.2f} - {df['close'].max():.2f}\n")
+    
+    # 测试RSI分析
+    print("2. 测试RSI回调条件分析")
+    df_with_rsi = analyzer.analyze_rsi_pullback_conditions(df.copy())
+    
+    print("   RSI分析结果:")
+    print(f"   - 添加了RSI列: {'rsi' in df_with_rsi.columns}")
+    if 'rsi' in df_with_rsi.columns:
+        latest_rsi = df_with_rsi['rsi'].iloc[-1]
+        if not pd.isna(latest_rsi):
+            print(f"   - 当前RSI: {latest_rsi:.2f}")
+        else:
+            print("   - 当前RSI: N/A")
+    
+    # 统计布尔结果
+    pullback_count = df_with_rsi['rsi_pullback_from_overbought'].sum()
+    reversal_count = df_with_rsi['rsi_oversold_reversal'].sum()
+    avoid_count = df_with_rsi['rsi_avoid_prolonged_overbought'].sum()
+    favorable_count = df_with_rsi['rsi_pullback_favorable'].sum()
+    
+    print(f"   - 从超买回调到中性: {pullback_count}次")
+    print(f"   - 超卖动能反转: {reversal_count}次")
+    print(f"   - 应避免（长期超买）: {avoid_count}次")
+    print(f"   - 适合回调入场: {favorable_count}次\n")
+    
+    # 测试MFI分析
+    print("3. 测试MFI回调条件分析")
+    df_with_mfi = analyzer.analyze_mfi_pullback_conditions(df.copy())
+    
+    print("   MFI分析结果:")
+    print(f"   - 添加了MFI列: {'mfi' in df_with_mfi.columns}")
+    if 'mfi' in df_with_mfi.columns:
+        latest_mfi = df_with_mfi['mfi'].iloc[-1]
+        if not pd.isna(latest_mfi):
+            print(f"   - 当前MFI: {latest_mfi:.2f}")
+        else:
+            print("   - 当前MFI: N/A")
+    
+    # 统计布尔结果
+    recovery_count = df_with_mfi['mfi_recovery_from_oversold'].sum()
+    inflow_count = df_with_mfi['mfi_capital_inflow_stability'].sum()
+    support_count = df_with_mfi['mfi_supports_pullback'].sum()
+    overall_count = df_with_mfi['mfi_overall_favorable'].sum()
+    
+    print(f"   - 从超卖恢复: {recovery_count}次")
+    print(f"   - 价格稳定期资金流入: {inflow_count}次")
+    print(f"   - MFI支持回调入场: {support_count}次")
+    print(f"   - MFI综合评估有利: {overall_count}次\n")
+    
+    # 测试完整的分析流程
+    print("4. 测试完整分析流程（包括原有功能）")
+    full_analysis_df = analyzer.analyze(df)
+    
+    # 同时应用RSI和MFI分析
+    full_analysis_df = analyzer.analyze_rsi_pullback_conditions(full_analysis_df)
+    full_analysis_df = analyzer.analyze_mfi_pullback_conditions(full_analysis_df)
+    
+    # 显示最后几行的分析结果
+    print("\n   最近5个交易日的综合分析结果:")
+    display_cols = ['date', 'close']
+    
+    # 检查并添加存在的列
+    optional_cols = ['rsi', 'mfi', 'rsi_pullback_favorable', 'mfi_overall_favorable',
+                    'support_count', 'support_types', 'volume_contraction_signal',
+                    'candlestick_pattern_signal', 'any_support_signal']
+    for col in optional_cols:
+        if col in full_analysis_df.columns:
+            display_cols.append(col)
+    
+    if len(display_cols) > 2:
+        # 只显示有限的列以保持可读性
+        key_cols = ['date', 'close', 'rsi', 'mfi', 'rsi_pullback_favorable',
+                   'mfi_overall_favorable', 'any_support_signal']
+        display_cols = [col for col in key_cols if col in full_analysis_df.columns]
+        print(full_analysis_df[display_cols].tail())
+    else:
+        print("   注意：某些分析列可能未生成")
+    
+    # 综合评估
+    print("\n5. 综合评估总结:")
+    
+    # 获取最新数据
+    latest_row = full_analysis_df.iloc[-1]
+    
+    rsi_favorable = latest_row.get('rsi_pullback_favorable', False)
+    mfi_favorable = latest_row.get('mfi_overall_favorable', False)
+    support_signal = latest_row.get('any_support_signal', False)
+    volume_signal = latest_row.get('volume_contraction_signal', False)
+    
+    print(f"   - RSI指标建议入场: {rsi_favorable}")
+    print(f"   - MFI指标显示有利: {mfi_favorable}")
+    print(f"   - 存在支撑信号: {support_signal}")
+    print(f"   - 成交量萎缩: {volume_signal}")
+    
+    # 策略建议
+    print("\n6. 回调入场策略建议:")
+    
+    if rsi_favorable and mfi_favorable:
+        print("   ✓ RSI和MFI指标均支持回调入场")
+        print("   建议：可以考虑建立仓位，但需结合其他技术指标确认")
+    elif rsi_favorable:
+        print("   ✓ RSI指标支持回调入场")
+        print("   △ MFI指标未给出明确信号")
+        print("   建议：谨慎观察，等待MFI确认")
+    elif mfi_favorable:
+        print("   △ RSI指标未给出明确信号")
+        print("   ✓ MFI指标显示资金流入")
+        print("   建议：继续观察RSI走势")
+    else:
+        print("   ✗ RSI和MFI指标均不支持入场")
+        print("   建议：继续等待更好的入场时机")
+    
+    # 测试边界情况
+    print("\n7. 测试边界情况")
+    
+    # 测试数据不足的情况
+    small_df = df.head(10)
+    df_small_rsi = analyzer.analyze_rsi_pullback_conditions(small_df)
+    print(f"   - 数据不足时RSI分析: 添加了列但值为空")
+    print(f"     RSI列存在: {'rsi' in df_small_rsi.columns}")
+    print(f"     RSI值数量: {df_small_rsi['rsi'].notna().sum()}")
+    
+    # 测试空数据
+    empty_df = pd.DataFrame()
+    df_empty_mfi = analyzer.analyze_mfi_pullback_conditions(empty_df)
+    print(f"   - 空数据时MFI分析: 返回原DataFrame")
+    print(f"     返回空DataFrame: {df_empty_mfi.empty}")
+    
+    # 测试缺少必要列的情况
+    incomplete_df = df[['date', 'close']].copy()
+    df_incomplete_mfi = analyzer.analyze_mfi_pullback_conditions(incomplete_df)
+    print(f"   - 缺少列时MFI分析: 添加了空列")
+    print(f"     MFI列存在: {'mfi' in df_incomplete_mfi.columns}")
+    print(f"     MFI值数量: {df_incomplete_mfi['mfi'].notna().sum()}")
+    
+    print("\n=== 测试完成 ===")
+    print("\n功能总结:")
+    print("1. RSI分析功能：")
+    print("   - 检测从超买区域(>70)回调到中性区间(45-55)的强势回调")
+    print("   - 识别从超卖区域(30-40)的动能反转")
+    print("   - 警示长期超买状态(>80)")
+    print("   - 直接在DataFrame上添加布尔值列")
+    print("\n2. MFI分析功能：")
+    print("   - 检测从超卖区(<30)的恢复和上升动能")
+    print("   - 识别价格稳定期的资金流入模式")
+    print("   - 评估当前MFI水平是否支持入场")
+    print("   - 直接在DataFrame上添加布尔值列")
+    print("\n3. 两个函数都直接修改传入的DataFrame，添加分析结果列")
