@@ -1484,6 +1484,157 @@ class TrendStrategy:
             logger.error(f"计算置信度时发生错误: {e}")
             return 0.5
     
+    def calculate_trend_score(self, df):
+        """
+        计算趋势综合评分系统
+        
+        评分公式：(均线分 + MACD分 + 价格形态分) * 量价确认乘数
+        
+        Parameters
+        ----------
+        df : pandas.DataFrame
+            包含所有技术指标和分析结果的数据框
+            
+        Returns
+        -------
+        pandas.DataFrame
+            添加了评分结果的数据框，包含以下列：
+            - ma_score: 均线系统得分
+            - macd_score: MACD指标得分
+            - pattern_score: 价格形态得分（已存在）
+            - volume_multiplier: 量价确认乘数
+            - trend_total_score: 趋势总分
+            - trend_signal: 趋势信号（买入/卖出/观望）
+        """
+        if df.empty:
+            logger.warning("输入数据为空，无法计算趋势评分")
+            return df
+            
+        logger.info("=== 开始计算趋势综合评分 ===")
+        
+        # 复制数据避免修改原始数据
+        result_df = df.copy()
+        
+        # ===== 1. 均线系统评分（0-4分） =====
+        result_df['ma_score'] = 0.0
+        
+        # 多头排列得分（0-2分）
+        if 'bullish_alignment' in result_df.columns and 'alignment_strength' in result_df.columns:
+            # 完美多头排列：+2分
+            result_df.loc[result_df['alignment_strength'] >= 1.0, 'ma_score'] += 2.0
+            # 基本多头排列：+1分
+            result_df.loc[(result_df['alignment_strength'] >= 0.6) & (result_df['alignment_strength'] < 1.0), 'ma_score'] += 1.0
+            
+        # 关键均线支撑得分（0-2分）
+        if 'ma20_support' in result_df.columns:
+            # 股价在MA20上方：+1分
+            result_df.loc[result_df['ma20_support'], 'ma_score'] += 1.0
+            
+        if 'ma60_support' in result_df.columns:
+            # 股价在MA60上方：+1分
+            result_df.loc[result_df['ma60_support'], 'ma_score'] += 1.0
+            
+        # 趋势强度加成（0-1分）
+        if 'trend_strength_score' in result_df.columns:
+            # 强趋势额外加分
+            result_df.loc[result_df['trend_strength_score'] >= 0.7, 'ma_score'] += 1.0
+            result_df.loc[(result_df['trend_strength_score'] >= 0.5) & (result_df['trend_strength_score'] < 0.7), 'ma_score'] += 0.5
+            
+        # 均线得分上限为4分
+        result_df['ma_score'] = result_df['ma_score'].clip(upper=4.0)
+        
+        # ===== 2. MACD指标评分（0-3分） =====
+        result_df['macd_score'] = 0.0
+        
+        if 'macd_above_zero' in result_df.columns:
+            # DIF和DEA均在0轴上方：+1分
+            result_df.loc[result_df['macd_above_zero'], 'macd_score'] += 1.0
+            
+        if 'macd_golden_cross' in result_df.columns:
+            # 发生金叉：+2分
+            result_df.loc[result_df['macd_golden_cross'], 'macd_score'] += 2.0
+            
+        if 'macd_red_continuing' in result_df.columns:
+            # 红柱持续（非金叉情况）：+1分
+            result_df.loc[result_df['macd_red_continuing'] & (~result_df['macd_golden_cross']), 'macd_score'] += 1.0
+            
+        # MACD得分上限为3分
+        result_df['macd_score'] = result_df['macd_score'].clip(upper=3.0)
+        
+        # ===== 3. 价格形态评分（-2到+2分） =====
+        # 价格形态分数已经在analyze_price_patterns中计算
+        if 'pattern_score' not in result_df.columns:
+            # 如果没有形态分析结果，执行分析
+            pattern_analysis = self.analyze_price_patterns(result_df)
+            result_df['pattern_score'] = pattern_analysis['pattern_score']
+            
+        # ===== 4. 计算量价确认乘数（0.5-1.5） =====
+        result_df['volume_multiplier'] = 1.0  # 默认乘数
+        
+        if 'volume_price_signal' in result_df.columns:
+            # 强量价配合：1.5倍
+            result_df.loc[result_df['volume_price_signal'] >= 0.3, 'volume_multiplier'] = 1.5
+            # 中等量价配合：1.2倍
+            result_df.loc[(result_df['volume_price_signal'] >= 0.15) & (result_df['volume_price_signal'] < 0.3), 'volume_multiplier'] = 1.2
+            # 弱量价配合：1.0倍（保持不变）
+            result_df.loc[(result_df['volume_price_signal'] >= 0.05) & (result_df['volume_price_signal'] < 0.15), 'volume_multiplier'] = 1.0
+            # 量价背离：0.8倍
+            result_df.loc[(result_df['volume_price_signal'] > -0.15) & (result_df['volume_price_signal'] < 0.05), 'volume_multiplier'] = 0.8
+            # 严重量价背离：0.5倍
+            result_df.loc[result_df['volume_price_signal'] <= -0.15, 'volume_multiplier'] = 0.5
+            
+        # ===== 5. 计算趋势总分 =====
+        # 公式：(均线分 + MACD分 + 价格形态分) * 量价确认乘数
+        result_df['trend_total_score'] = (
+            result_df['ma_score'] +
+            result_df['macd_score'] +
+            result_df['pattern_score']
+        ) * result_df['volume_multiplier']
+        
+        # ===== 6. 生成趋势信号 =====
+        result_df['trend_signal'] = '观望'
+        result_df['trend_signal_value'] = 0
+        
+        # 强烈买入：总分 >= 6
+        result_df.loc[result_df['trend_total_score'] >= 6, 'trend_signal'] = '强烈买入'
+        result_df.loc[result_df['trend_total_score'] >= 6, 'trend_signal_value'] = 2
+        
+        # 买入：总分 >= 4
+        result_df.loc[(result_df['trend_total_score'] >= 4) & (result_df['trend_total_score'] < 6), 'trend_signal'] = '买入'
+        result_df.loc[(result_df['trend_total_score'] >= 4) & (result_df['trend_total_score'] < 6), 'trend_signal_value'] = 1
+        
+        # 观望：总分 -2 到 4
+        result_df.loc[(result_df['trend_total_score'] > -2) & (result_df['trend_total_score'] < 4), 'trend_signal'] = '观望'
+        result_df.loc[(result_df['trend_total_score'] > -2) & (result_df['trend_total_score'] < 4), 'trend_signal_value'] = 0
+        
+        # 卖出：总分 <= -2
+        result_df.loc[result_df['trend_total_score'] <= -2, 'trend_signal'] = '卖出'
+        result_df.loc[result_df['trend_total_score'] <= -2, 'trend_signal_value'] = -1
+        
+        # 强烈卖出：总分 <= -4
+        result_df.loc[result_df['trend_total_score'] <= -4, 'trend_signal'] = '强烈卖出'
+        result_df.loc[result_df['trend_total_score'] <= -4, 'trend_signal_value'] = -2
+        
+        # ===== 7. 评分统计和日志 =====
+        # 获取最新一行的评分数据
+        if len(result_df) > 0:
+            latest = result_df.iloc[-1]
+            logger.info(f"=== 趋势评分系统结果（最新数据） ===")
+            logger.info(f"均线系统得分: {latest['ma_score']:.1f}/4分")
+            logger.info(f"MACD指标得分: {latest['macd_score']:.1f}/3分")
+            logger.info(f"价格形态得分: {latest['pattern_score']:.0f}/2分")
+            logger.info(f"量价确认乘数: {latest['volume_multiplier']:.1f}x")
+            logger.info(f"趋势总分: {latest['trend_total_score']:.1f}分")
+            logger.info(f"趋势信号: {latest['trend_signal']}")
+            
+            # 统计各类信号数量
+            signal_counts = result_df['trend_signal'].value_counts()
+            logger.info(f"=== 信号分布统计 ===")
+            for signal, count in signal_counts.items():
+                logger.info(f"{signal}: {count}次 ({count/len(result_df):.1%})")
+                
+        return result_df
+    
     def combine_signals(self, df):
         """
         组合多个策略信号，生成最终交易信号
@@ -1714,5 +1865,87 @@ if __name__ == "__main__":
     # 创建策略实例
     strategy = TrendStrategy()
     
-    # 测试策略
-    print("趋势策略模块测试完成")
+    # 创建测试数据
+    import numpy as np
+    from datetime import datetime, timedelta
+    
+    # 生成模拟数据
+    dates = pd.date_range(start='2024-01-01', end='2024-12-31', freq='D')
+    n = len(dates)
+    
+    # 模拟上升趋势的价格数据
+    trend = np.linspace(100, 150, n)
+    noise = np.random.normal(0, 2, n)
+    prices = trend + noise
+    
+    # 创建测试DataFrame
+    test_df = pd.DataFrame({
+        'date': dates,
+        'open': prices - np.random.uniform(0, 1, n),
+        'high': prices + np.random.uniform(0, 2, n),
+        'low': prices - np.random.uniform(0, 2, n),
+        'close': prices,
+        'volume': np.random.uniform(1000000, 2000000, n)
+    })
+    
+    # 计算技术指标
+    # 计算均线
+    test_df['ma_5'] = talib.SMA(test_df['close'].values, timeperiod=5)
+    test_df['ma_10'] = talib.SMA(test_df['close'].values, timeperiod=10)
+    test_df['ma_20'] = talib.SMA(test_df['close'].values, timeperiod=20)
+    test_df['ma_60'] = talib.SMA(test_df['close'].values, timeperiod=60)
+    
+    # 计算布林带
+    test_df['bb_upper'], test_df['bb_middle'], test_df['bb_lower'] = talib.BBANDS(
+        test_df['close'].values,
+        timeperiod=strategy.bollinger_period,
+        nbdevup=strategy.bollinger_std_dev,
+        nbdevdn=strategy.bollinger_std_dev,
+        matype=0
+    )
+    
+    # 计算EMA
+    test_df['ema_21'] = talib.EMA(test_df['close'].values, timeperiod=strategy.ema_short_period)
+    test_df['ema_200'] = talib.EMA(test_df['close'].values, timeperiod=strategy.ema_long_period)
+    
+    # 计算成交量均线
+    test_df['volume_ma_5'] = test_df['volume'].rolling(window=5).mean()
+    
+    logger.info("=== 开始测试趋势评分系统 ===")
+    
+    # 1. 测试均线分析
+    logger.info("\n1. 测试均线分析功能...")
+    test_df = strategy.moving_average_analysis(test_df)
+    
+    # 2. 测试MACD分析
+    logger.info("\n2. 测试MACD分析功能...")
+    test_df = strategy.macd_signal(test_df)
+    
+    # 3. 测试量价分析
+    logger.info("\n3. 测试量价确认功能...")
+    test_df = strategy.volume_price_confirmation(test_df)
+    
+    # 4. 测试价格形态识别
+    logger.info("\n4. 测试价格形态识别功能...")
+    pattern_result = strategy.analyze_price_patterns(test_df)
+    
+    # 5. 计算趋势综合评分
+    logger.info("\n5. 计算趋势综合评分...")
+    test_df = strategy.calculate_trend_score(test_df)
+    
+    # 显示最后10天的评分结果
+    logger.info("\n=== 最后10天的评分结果 ===")
+    display_cols = ['date', 'close', 'ma_score', 'macd_score', 'pattern_score',
+                   'volume_multiplier', 'trend_total_score', 'trend_signal']
+    
+    if all(col in test_df.columns for col in display_cols):
+        print(test_df[display_cols].tail(10).to_string())
+    
+    # 统计信号分布
+    if 'trend_signal' in test_df.columns:
+        signal_distribution = test_df['trend_signal'].value_counts()
+        logger.info(f"\n=== 全年信号分布统计 ===")
+        for signal, count in signal_distribution.items():
+            logger.info(f"{signal}: {count}次 ({count/len(test_df):.1%})")
+    
+    print("\n趋势评分系统测试完成！")
