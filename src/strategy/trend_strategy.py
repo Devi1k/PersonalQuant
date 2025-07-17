@@ -18,6 +18,9 @@ current_file = Path(__file__).resolve()
 project_root = current_file.parent.parent.parent
 sys.path.insert(0, str(project_root))
 
+# 导入支撑位回踩分析器
+from src.strategy.support_pullback_analyzer import SupportPullbackAnalyzer
+
 # 设置日志
 log_dir = os.path.join(project_root, "logs")
 os.makedirs(log_dir, exist_ok=True)
@@ -104,9 +107,13 @@ class TrendStrategy:
             'macd_signal': 2.0,          # MACD信号权重（趋势跟踪核心指标）
             'multi_timeframe_signal': 3.0, # 多周期信号权重最高（优化入场点）
             'ema_reversal_signal': 1.5,   # 反转信号权重适中（风险对冲）
-            'volume_price_signal': 1.0    # 成交量确认信号
+            'volume_price_signal': 1.0,   # 成交量确认信号
+            'pullback_signal': 2.5        # 回踩买点信号权重（优化入场点）
         }
         self.signal_weights = trend_config.get('signal_weights', default_weights)
+        
+        # 初始化支撑位回踩分析器
+        self.pullback_analyzer = SupportPullbackAnalyzer(config=config)
         
         logger.info(f"趋势策略初始化完成，参数：快速MA={self.fast_ma}, 慢速MA={self.slow_ma}, "
                    f"布林带周期={self.bollinger_period}, 布林带标准差={self.bollinger_std_dev}, "
@@ -117,6 +124,7 @@ class TrendStrategy:
                    f"EMA通道周期={self.ema_channel_period}, 成交量阈值={self.volume_threshold}, "
                    f"通道周期={self.channel_period}, 突破阻力位周期={self.breakout_resistance_period}, "
                    f"顶部风险高点周期={self.head_risk_peak_period}")
+        logger.info("支撑位回踩分析器已初始化")
     
     def bollinger_bands_breakout(self, df):
         """
@@ -1484,6 +1492,56 @@ class TrendStrategy:
             logger.error(f"计算置信度时发生错误: {e}")
             return 0.5
     
+    def analyze_pullback_buypoint(self, df):
+        """
+        分析回踩买点
+        
+        使用 SupportPullbackAnalyzer 进行支撑位识别和回踩买点评分
+        
+        Parameters
+        ----------
+        df : pandas.DataFrame
+            包含OHLCV数据的数据框
+            
+        Returns
+        -------
+        pandas.DataFrame
+            添加了回踩买点分析结果的数据框
+        """
+        if df.empty:
+            logger.warning("输入数据为空，无法进行回踩买点分析")
+            return df
+            
+        logger.info("开始回踩买点分析")
+        
+        try:
+            # 使用支撑位回踩分析器进行分析
+            df_with_pullback = self.pullback_analyzer.analyze(df)
+            
+            # 检查是否有回踩评分
+            if 'pullback_score' in df_with_pullback.columns:
+                latest_score = df_with_pullback['pullback_score'].iloc[-1]
+                latest_signal = df_with_pullback['pullback_signal'].iloc[-1]
+                
+                logger.info(f"=== 回踩买点分析结果 ===")
+                logger.info(f"回踩评分: {latest_score:.2f}/10分")
+                logger.info(f"回踩信号: {latest_signal}")
+                
+                # 统计回踩信号分布
+                if 'pullback_signal' in df_with_pullback.columns:
+                    signal_counts = df_with_pullback['pullback_signal'].value_counts()
+                    logger.info("回踩信号分布:")
+                    for signal, count in signal_counts.items():
+                        logger.info(f"  {signal}: {count}次 ({count/len(df_with_pullback):.1%})")
+            else:
+                logger.warning("回踩买点分析未生成评分结果")
+                
+            return df_with_pullback
+            
+        except Exception as e:
+            logger.error(f"回踩买点分析时发生错误: {e}")
+            return df
+    
     def calculate_trend_score(self, df):
         """
         计算趋势综合评分系统
@@ -1679,6 +1737,10 @@ class TrendStrategy:
         if 'volume' in df.columns and 'volume_ma_5' in df.columns:
             df = self.volume_price_confirmation(df)
         
+        # 执行回踩买点分析
+        logger.info("开始执行回踩买点分析")
+        df = self.analyze_pullback_buypoint(df)
+        
         # 执行价格形态识别分析
         logger.info("开始执行价格形态识别分析")
         pattern_analysis = self.analyze_price_patterns(df)
@@ -1696,7 +1758,7 @@ class TrendStrategy:
         # 确保必要的信号列存在
         signal_cols = [
             'bb_signal', 'ema_signal', 'macd_signal', 'ma_signal', 'multi_timeframe_signal',
-            'ema_reversal_signal', 'volume_price_signal'
+            'ema_reversal_signal', 'volume_price_signal', 'pullback_signal'
         ]
         
         available_signals = [col for col in signal_cols if col in df.columns]
@@ -1718,7 +1780,7 @@ class TrendStrategy:
         
         # 按照策略类型分组
         # trend_signals = ['ema_signal', 'bb_signal', 'macd_signal', 'ma_signal']
-        trend_signals = ['ema_signal', 'macd_signal']
+        trend_signals = ['ema_signal', 'macd_signal', 'pullback_signal']
         # trend_signals = ['bb_signal']
 
         multi_tf_signals = ['multi_timeframe_signal']

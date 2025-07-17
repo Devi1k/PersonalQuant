@@ -910,8 +910,17 @@ class SupportPullbackAnalyzer:
         # 5. K线形态识别
         df = self.identify_candlestick_patterns(df)
         
-        # 6. 生成支撑位汇总
+        # 6. RSI分析
+        df = self.analyze_rsi_pullback_conditions(df)
+        
+        # 7. MFI分析
+        df = self.analyze_mfi_pullback_conditions(df)
+        
+        # 8. 生成支撑位汇总
         df = self.generate_support_summary(df)
+        
+        # 9. 计算回踩买点综合评分
+        df = self.calculate_pullback_score(df)
         
         # 添加分析时间戳
         df['analysis_timestamp'] = datetime.now()
@@ -919,6 +928,285 @@ class SupportPullbackAnalyzer:
         logger.info("支撑位识别和成交量分析完成")
         
         return df
+    
+    def calculate_pullback_score(self, df):
+        """
+        计算回踩买点综合评分
+        
+        评分系统（总分10分）：
+        1. 支撑强度评分（0-3.5分）
+        2. 确认信号评分（0-3分）
+        3. K线形态评分（0-2分）
+        4. 动量指标评分（0-1.5分）
+        
+        Parameters
+        ----------
+        df : pandas.DataFrame
+            包含所有分析结果的数据框
+            
+        Returns
+        -------
+        pandas.DataFrame
+            添加了回踩买点评分的数据框
+        """
+        if df.empty:
+            logger.warning("输入数据为空，无法计算回踩评分")
+            return df
+            
+        logger.info("开始计算回踩买点综合评分")
+        
+        # 复制数据
+        result_df = df.copy()
+        
+        # 初始化评分列
+        result_df['support_strength_score'] = 0.0  # 支撑强度评分
+        result_df['confirmation_signal_score'] = 0.0  # 确认信号评分
+        result_df['candlestick_pattern_score'] = 0.0  # K线形态评分
+        result_df['momentum_indicator_score'] = 0.0  # 动量指标评分
+        result_df['pullback_total_score'] = 0.0  # 回踩买点总分
+        result_df['pullback_signal'] = ''  # 回踩信号描述
+        
+        # 1. 计算支撑强度评分（0-3.5分）
+        result_df = self._calculate_support_strength_score(result_df)
+        
+        # 2. 计算确认信号评分（0-3分）
+        result_df = self._calculate_confirmation_signal_score(result_df)
+        
+        # 3. 计算K线形态评分（0-2分）
+        result_df = self._calculate_candlestick_pattern_score(result_df)
+        
+        # 4. 计算动量指标评分（0-1.5分）
+        result_df = self._calculate_momentum_indicator_score(result_df)
+        
+        # 5. 计算总分
+        result_df['pullback_total_score'] = (
+            result_df['support_strength_score'] +
+            result_df['confirmation_signal_score'] +
+            result_df['candlestick_pattern_score'] +
+            result_df['momentum_indicator_score']
+        )
+        
+        # 6. 生成回踩信号
+        result_df = self._generate_pullback_signal(result_df)
+        
+        # 统计评分结果
+        if len(result_df) > 0:
+            latest = result_df.iloc[-1]
+            logger.info(f"=== 回踩买点评分结果（最新数据） ===")
+            logger.info(f"支撑强度评分: {latest['support_strength_score']:.2f}/3.5分")
+            logger.info(f"确认信号评分: {latest['confirmation_signal_score']:.2f}/3分")
+            logger.info(f"K线形态评分: {latest['candlestick_pattern_score']:.2f}/2分")
+            logger.info(f"动量指标评分: {latest['momentum_indicator_score']:.2f}/1.5分")
+            logger.info(f"回踩买点总分: {latest['pullback_total_score']:.2f}/10分")
+            logger.info(f"回踩信号: {latest['pullback_signal']}")
+            
+        return result_df
+    
+    def _calculate_support_strength_score(self, df):
+        """
+        计算支撑强度评分（0-3.5分）
+        
+        基于MA支撑、平台支撑和布林带支撑计算
+        """
+        try:
+            # MA支撑评分（基础0-3分）
+            if 'ma_support_level' in df.columns:
+                # 直接使用ma_support_level作为基础分（0, 1, 2, 3）
+                df['support_strength_score'] = df['ma_support_level'].astype(float)
+            
+            # 额外加分条件
+            # 1. 同时触及多条均线支撑（+0.5分）
+            ma_touch_count = 0
+            for ma in ['ma10_support', 'ma20_support', 'ma60_support']:
+                if ma in df.columns:
+                    ma_touch_count += df[ma].astype(int)
+            
+            # 如果触及2条或以上均线，加0.5分
+            multi_ma_bonus = (ma_touch_count >= 2).astype(float) * 0.5
+            df['support_strength_score'] = df['support_strength_score'] + multi_ma_bonus
+            
+            # 2. 平台/颈线支撑额外加分
+            if 'platform_neckline_signal' in df.columns:
+                platform_bonus = df['platform_neckline_signal'].astype(float) * 0.3
+                df['support_strength_score'] = df['support_strength_score'] + platform_bonus
+            
+            # 3. 布林带支撑额外加分
+            if 'bb_support_signal' in df.columns:
+                bb_bonus = df['bb_support_signal'].astype(float) * 0.2
+                df['support_strength_score'] = df['support_strength_score'] + bb_bonus
+            
+            # 确保不超过3.5分
+            df['support_strength_score'] = df['support_strength_score'].clip(upper=3.5)
+            
+            return df
+            
+        except Exception as e:
+            logger.error(f"计算支撑强度评分时发生错误: {e}")
+            return df
+    
+    def _calculate_confirmation_signal_score(self, df):
+        """
+        计算确认信号评分（0-3分）
+        
+        基于成交量萎缩情况计算
+        """
+        try:
+            if 'volume_ratio' in df.columns:
+                # 根据成交量萎缩程度评分
+                # volume_ratio <= 0.5: 极度萎缩（3分）
+                # volume_ratio <= 0.7: 显著萎缩（2.5分）
+                # volume_ratio <= 0.8: 中度萎缩（2分）
+                # volume_ratio <= 0.9: 轻度萎缩（1分）
+                # volume_ratio > 0.9: 未萎缩（0分）
+                
+                conditions = [
+                    df['volume_ratio'] <= 0.5,
+                    df['volume_ratio'] <= 0.7,
+                    df['volume_ratio'] <= 0.8,
+                    df['volume_ratio'] <= 0.9
+                ]
+                choices = [3.0, 2.5, 2.0, 1.0]
+                
+                df['confirmation_signal_score'] = np.select(conditions, choices, default=0.0)
+            
+            # 如果有连续萎缩确认，额外加分
+            if 'pullback_volume_contraction' in df.columns:
+                contraction_bonus = df['pullback_volume_contraction'].astype(float) * 0.5
+                df['confirmation_signal_score'] = (
+                    df['confirmation_signal_score'] + contraction_bonus
+                ).clip(upper=3.0)
+            
+            return df
+            
+        except Exception as e:
+            logger.error(f"计算确认信号评分时发生错误: {e}")
+            return df
+    
+    def _calculate_candlestick_pattern_score(self, df):
+        """
+        计算K线形态评分（0-2分）
+        
+        根据K线形态强度分配分数
+        """
+        try:
+            # 定义各形态的评分权重
+            pattern_scores = {
+                'morning_star_pattern': 2.0,      # 晨星形态最强
+                'bullish_engulfing_pattern': 1.5, # 看涨吞没次之
+                'hammer_pattern': 1.0,             # 锤子线
+                'doji_pattern': 0.5                # 十字星最弱
+            }
+            
+            # 计算最高分
+            max_score = 0.0
+            for pattern, score in pattern_scores.items():
+                if pattern in df.columns:
+                    # 对每一行，如果出现该形态，更新最高分
+                    pattern_score = df[pattern].astype(float) * score
+                    max_score = np.maximum(max_score, pattern_score)
+            
+            df['candlestick_pattern_score'] = max_score.clip(upper=2.0)
+            
+            return df
+            
+        except Exception as e:
+            logger.error(f"计算K线形态评分时发生错误: {e}")
+            return df
+    
+    def _calculate_momentum_indicator_score(self, df):
+        """
+        计算动量指标评分（0-1.5分）
+        
+        基于RSI和MFI指标计算
+        """
+        try:
+            rsi_score = 0.0
+            mfi_score = 0.0
+            
+            # RSI评分（0-0.75分）
+            if 'rsi' in df.columns:
+                # 从超买回调评分最高
+                if 'rsi_pullback_from_overbought' in df.columns:
+                    rsi_score = np.where(df['rsi_pullback_from_overbought'], 0.75, rsi_score)
+                
+                # 超卖反转次之
+                if 'rsi_oversold_reversal' in df.columns:
+                    rsi_score = np.where(
+                        df['rsi_oversold_reversal'] & (rsi_score == 0),
+                        0.5,
+                        rsi_score
+                    )
+                
+                # RSI在合理区间（30-50）
+                rsi_in_range = (df['rsi'] >= 30) & (df['rsi'] <= 50)
+                rsi_score = np.where(
+                    rsi_in_range & (rsi_score == 0),
+                    0.25,
+                    rsi_score
+                )
+            
+            # MFI评分（0-0.75分）
+            if 'mfi' in df.columns:
+                # 从超卖恢复评分最高
+                if 'mfi_recovery_from_oversold' in df.columns:
+                    mfi_score = np.where(df['mfi_recovery_from_oversold'], 0.75, mfi_score)
+                
+                # 资金流入稳定次之
+                if 'mfi_capital_inflow_stability' in df.columns:
+                    mfi_score = np.where(
+                        df['mfi_capital_inflow_stability'] & (mfi_score == 0),
+                        0.5,
+                        mfi_score
+                    )
+                
+                # MFI在合理区间（35-65）
+                mfi_in_range = (df['mfi'] >= 35) & (df['mfi'] <= 65)
+                mfi_score = np.where(
+                    mfi_in_range & (mfi_score == 0),
+                    0.25,
+                    mfi_score
+                )
+            
+            # 总分为RSI和MFI评分之和
+            df['momentum_indicator_score'] = (rsi_score + mfi_score).clip(upper=1.5)
+            
+            return df
+            
+        except Exception as e:
+            logger.error(f"计算动量指标评分时发生错误: {e}")
+            return df
+    
+    def _generate_pullback_signal(self, df):
+        """
+        根据总分生成回踩信号
+        
+        评分标准：
+        - 8分以上：强烈买入信号
+        - 6-8分：买入信号
+        - 4-6分：关注信号
+        - 4分以下：观望
+        """
+        try:
+            conditions = [
+                df['pullback_total_score'] >= 8,
+                df['pullback_total_score'] >= 6,
+                df['pullback_total_score'] >= 4
+            ]
+            choices = ['强烈买入', '买入', '关注']
+            
+            df['pullback_signal'] = np.select(conditions, choices, default='观望')
+            
+            # 添加信号强度值（用于量化交易）
+            df['pullback_signal_value'] = 0
+            df.loc[df['pullback_signal'] == '强烈买入', 'pullback_signal_value'] = 2
+            df.loc[df['pullback_signal'] == '买入', 'pullback_signal_value'] = 1
+            df.loc[df['pullback_signal'] == '关注', 'pullback_signal_value'] = 0.5
+            
+            return df
+            
+        except Exception as e:
+            logger.error(f"生成回踩信号时发生错误: {e}")
+            return df
     
     def has_hammer_pattern(self, df, lookback=1):
         """

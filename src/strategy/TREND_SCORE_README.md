@@ -2,11 +2,13 @@
 
 ## 概述
 
-趋势综合评分系统是一个多维度的股票趋势分析工具，通过整合均线系统、MACD指标、价格形态识别和成交量分析，为投资决策提供量化的评分支持。
+趋势综合评分系统是一个多维度的股票趋势分析工具，通过整合均线系统、MACD指标、价格形态识别、成交量分析以及回踩买点评分，为投资决策提供量化的评分支持。
 
 ## 评分公式
 
 **趋势总分 = (均线分 + MACD分 + 价格形态分) × 量价确认乘数**
+
+**回踩买点评分 = 支撑强度分 + 确认信号分 + K线形态分 + 动量指标分**
 
 ## 评分组成
 
@@ -43,7 +45,47 @@
 
 - **形态不明**：0分
 
-### 4. 量价确认乘数（0.5-1.5倍）
+### 4. 回踩买点评分（0-10分）
+
+回踩买点评分是一个独立的评分系统，专门用于识别股价回踩到支撑位时的买入机会。
+
+#### 4.1 支撑强度评分（0-3.5分）
+- **MA5支撑**：基础分1分
+  - 收盘价在MA5±2%范围内：额外+0.5分
+- **MA10支撑**：基础分1.5分
+  - 收盘价在MA10±2%范围内：额外+0.5分
+- **MA20支撑**：基础分2分
+  - 收盘价在MA20±2%范围内：额外+0.5分
+- **MA60支撑**：基础分2.5分
+  - 收盘价在MA60±2%范围内：额外+0.5分
+
+#### 4.2 确认信号评分（0-3分）
+- **强缩量**（成交量比率<0.5）：3分
+- **中等缩量**（成交量比率0.5-0.7）：2分
+- **轻微缩量**（成交量比率0.7-0.9）：1分
+- **未缩量**（成交量比率≥0.9）：0分
+
+#### 4.3 K线形态评分（0-2分）
+- **强看涨形态**（锤子线、启明星、刺透形态）：2分
+- **中性形态**（十字星）：1分
+- **看跌形态或无形态**：0分
+
+#### 4.4 动量指标评分（0-1.5分）
+- **RSI评分**（0-0.75分）
+  - RSI超卖后反弹（<30后上升）：0.75分
+  - RSI处于超卖区（20-30）：0.5分
+  - RSI处于低位（30-40）：0.25分
+- **MFI评分**（0-0.75分）
+  - MFI超卖后反弹（<20后上升）：0.75分
+  - MFI处于超卖区（20-30）：0.5分
+  - MFI处于低位（30-40）：0.25分
+
+#### 回踩买点信号判定
+- **买入**：总分 ≥ 6分
+- **观望**：总分 3-6分
+- **卖出**：总分 < 3分
+
+### 5. 量价确认乘数（0.5-1.5倍）
 
 - 强量价配合（信号≥0.3）：1.5倍
 - 中等量价配合（信号≥0.15）：1.2倍
@@ -80,8 +122,11 @@ df = strategy.volume_price_confirmation(df) # 量价分析
 # 计算综合评分
 df = strategy.calculate_trend_score(df)
 
+# 执行回踩买点分析（新增）
+df = strategy.analyze_pullback_buypoint(df)
+
 # 查看结果
-print(df[['date', 'close', 'trend_total_score', 'trend_signal']].tail())
+print(df[['date', 'close', 'trend_total_score', 'trend_signal', 'pullback_score', 'pullback_signal']].tail())
 ```
 
 ### 2. 完整示例
@@ -92,12 +137,36 @@ print(df[['date', 'close', 'trend_total_score', 'trend_signal']].tail())
 - 评分系统应用
 - 结果展示和保存
 
+### 2.1 回踩买点分析示例
+
+```python
+from src.strategy.support_pullback_analyzer import SupportPullbackAnalyzer
+
+# 创建回踩分析器
+analyzer = SupportPullbackAnalyzer()
+
+# 分析数据
+df_with_pullback = analyzer.analyze(df)
+
+# 查看回踩评分结果
+latest_pullback_score = df_with_pullback['pullback_score'].iloc[-1]
+latest_pullback_signal = df_with_pullback['pullback_signal'].iloc[-1]
+
+print(f"回踩买点评分: {latest_pullback_score:.2f}/10")
+print(f"回踩信号: {latest_pullback_signal}")
+
+# 筛选高分回踩买点
+high_score_pullbacks = df_with_pullback[df_with_pullback['pullback_score'] >= 6]
+print(f"发现 {len(high_score_pullbacks)} 个高分回踩买点")
+```
+
 ### 3. 自定义参数
 
 可以在创建策略实例时传入配置字典来自定义参数：
 
 ```python
 config = {
+    # 趋势策略参数
     'ma_periods': [5, 10, 20, 60],           # 均线周期
     'ma_support_threshold': 0.02,            # 支撑阈值
     'trend_strength_sensitivity': 1.0,       # 趋势强度敏感度
@@ -106,7 +175,17 @@ config = {
     'macd_signal_period': 9,                 # MACD信号线周期
     'channel_period': 30,                    # 通道周期
     'breakout_resistance_period': 60,        # 突破阻力位周期
-    'volume_threshold': 1.2                  # 成交量阈值
+    'volume_threshold': 1.2,                 # 成交量阈值
+    
+    # 回踩买点分析参数
+    'support_threshold_pct': 0.02,           # 支撑位阈值（2%）
+    'ma_trend_period': 20,                   # 趋势判断周期
+    'volume_contraction_threshold': 0.5,     # 缩量阈值
+    'volume_expansion_threshold': 1.5,       # 放量阈值
+    'hammer_body_ratio': 0.3,                # 锤子线实体比例
+    'doji_body_threshold': 0.001,            # 十字星阈值
+    'rsi_oversold_threshold': 30,            # RSI超卖阈值
+    'mfi_oversold_threshold': 30             # MFI超卖阈值
 }
 
 strategy = TrendStrategy(config)
@@ -144,6 +223,14 @@ strategy = TrendStrategy(config)
    - 实现风险分散和收益优化
 
 ## 更新日志
+
+- 2025-07-17：新增回踩买点评分系统
+  - 实现支撑强度评分（0-3.5分）
+  - 实现确认信号评分（0-3分）
+  - 实现K线形态评分（0-2分）
+  - 实现动量指标评分（0-1.5分）
+  - 集成到TrendStrategy类中
+  - 支持独立使用SupportPullbackAnalyzer
 
 - 2024-07-15：初始版本发布
   - 实现均线系统评分
