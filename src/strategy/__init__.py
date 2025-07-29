@@ -11,3 +11,4 @@ from .fusion_strategy import *
 from .risk_manager import *
 from .swing_strategy import *
 from .trend_strategy import *
+from .take_profit_strategy import *
